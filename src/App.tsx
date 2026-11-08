@@ -1,0 +1,2798 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Home,
+  Plus,
+  User,
+  Bell,
+  Settings,
+  Package,
+  Eye,
+  Share2,
+  X,
+  ArrowRight,
+  PlusCircle,
+  Camera,
+  Image as ImageIcon,
+  MapPin,
+  Trash2,
+  MessageCircle,
+  LogOut,
+  LogIn,
+  UserPlus,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  Search,
+  ShieldAlert,
+  RefreshCw,
+  Coins,
+  TrendingUp,
+  Sparkles,
+  Wrench,
+  PhoneCall,
+  Send,
+  Facebook,
+} from 'lucide-react';
+import { supabase } from './lib/supabase';
+import { uploadImageToSupabase, compressImage } from './lib/storage';
+import {
+  filterProducts,
+  serializeProductImages,
+  parseProductImages,
+  formatPriceWithCurrency,
+  formatTimeAgo,
+  formatWhatsappUrl,
+  type ProductItem,
+} from './lib/marketplace';
+import AuthModal from './components/AuthModal';
+import ProductCard from './components/ProductCard';
+import ImageLightboxModal from './components/ImageLightboxModal';
+import SettingsModal, { type SortOrderOption } from './components/SettingsModal';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+
+interface AdminNotification {
+  id: string;
+  title: string;
+  message: string;
+  created_at?: string;
+  date?: string;
+  is_read?: boolean;
+}
+
+// هيكلية الأقسام والأقسام الفرعية التابعة لكل قسم
+interface CategoryDefinition {
+  id: string;
+  name: string;
+  subCategories: string[];
+}
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<string>('home');
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  interface NavItemConfig {
+    id: string;
+    key: string;
+    label: string;
+    iconName: string;
+    is_visible: boolean;
+    order: number;
+    badgeText?: string | null;
+    is_primary_action?: boolean;
+  }
+
+  // شريط التنقل يأتي بالكامل من السحاب (يبدأ فارغاً)
+  const [navItems, setNavItems] = useState<NavItemConfig[]>([]);
+
+  // جلب التخصيص من سوبابيس لحظياً
+  useEffect(() => {
+    const fetchNavConfig = async () => {
+      try {
+        const { data } = await supabase
+          .from('app_navigation_config')
+          .select('*')
+          .order('display_order', { ascending: true });
+
+        if (data && data.length > 0) {
+          const mapped = data.map((d: any) => ({
+            id: d.id,
+            key: d.key,
+            label: d.label,
+            iconName: d.icon_name,
+            is_visible: d.is_visible,
+            order: d.display_order,
+            badgeText: d.badge_text,
+            is_primary_action: d.is_primary_action,
+          }));
+          setNavItems(mapped);
+        }
+      } catch (e) {
+        // الاعتماد على الترتيب الافتراضي
+      }
+    };
+
+    fetchNavConfig();
+
+    // الاستماع لأي تحديث لحظي لجدول التخصيص
+    const channel = supabase
+      .channel('realtime_app_navigation_config')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'app_navigation_config' },
+        () => {
+          fetchNavConfig();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // 1. مصفوفة الأقسام قادمة حصراً من السحاب
+  const [categoriesData, setCategoriesData] = useState<CategoryDefinition[]>([]);
+
+  // 2. قائمة المحافظات قادمة حصراً من السحاب (__APP_CONFIG_PROVINCES__)
+  const [provincesData, setProvincesData] = useState<string[]>([]);
+
+  // 3. مقترحات الإعدادات قادمة من السحاب (__APP_CONFIG_SETTINGS_PROPOSALS__)
+  const [settingsProposals, setSettingsProposals] = useState<any[]>([]);
+
+  // أسعار الصرف والذهب الحية القادمة من السحابة (__APP_CONFIG_RATES__)
+  const [marketRates, setMarketRates] = useState<any>(null);
+
+  // نص وحالة الملاحظة الإدارية (تأتي حصراً من السحاب)
+  const [adminNotice, setAdminNotice] = useState<{ active: boolean; text: string }>({
+    active: false,
+    text: '',
+  });
+
+  // قنوات وأرقام الدعم الفني (تأتي حصراً من السحاب بدون أي أرقام افتراضية ثابتة)
+  const [supportConfig, setSupportConfig] = useState<{
+    whatsapp?: { enabled: boolean; label: string; value: string; defaultMessage?: string };
+    telegram?: { enabled: boolean; label: string; value: string };
+    facebook?: { enabled: boolean; label: string; value: string };
+  } | null>(null);
+
+  // وضع الصيانة العام (يتحكم به تطبيق الإدارة من السحابة حصراً)
+  const [maintenanceConfig, setMaintenanceConfig] = useState<{
+    enabled: boolean;
+    title?: string;
+    message?: string;
+    estimatedReturnTime?: string;
+  }>({
+    enabled: false,
+  });
+
+  // رسالة الإذاعة العامة اللحظية (Flash Broadcast)
+  const [broadcastConfig, setBroadcastConfig] = useState<{
+    id: string;
+    active: boolean;
+    title: string;
+    message: string;
+    type?: 'urgent' | 'warning' | 'promo' | 'info';
+  } | null>(null);
+
+  const [dismissedBroadcastId, setDismissedBroadcastId] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem('souq_dismissed_broadcast_id') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  // معرفات الإعلانات المميزة VIP
+  const [featuredProductIds, setFeaturedProductIds] = useState<string[]>([]);
+
+  // وضع حماية الروبوت (none افتراضياً أو يتم سحبه من الإدارة)
+  const [botProtectionMode, setBotProtectionMode] = useState<string>('none');
+
+  // دالة فتح قنوات الدعم مع إخفاء الرقم الفعلي والتحويل التلقائي
+  const handleOpenSupport = (channel: 'whatsapp' | 'telegram' | 'facebook') => {
+    if (!supportConfig) return;
+    if (channel === 'whatsapp' && supportConfig.whatsapp?.value) {
+      const cleanPhone = supportConfig.whatsapp.value.replace(/[^0-9]/g, '');
+      const msg = encodeURIComponent(
+        supportConfig.whatsapp.defaultMessage || 'مرحباً، أحتاج مساعدة في تطبيق سوق سوريا'
+      );
+      window.open(`https://wa.me/${cleanPhone}?text=${msg}`, '_blank');
+    } else if (channel === 'telegram' && supportConfig.telegram?.value) {
+      let url = supportConfig.telegram.value.trim();
+      if (url.startsWith('@')) url = `https://t.me/${url.substring(1)}`;
+      else if (!url.startsWith('http')) url = `https://${url}`;
+      window.open(url, '_blank');
+    } else if (channel === 'facebook' && supportConfig.facebook?.value) {
+      let url = supportConfig.facebook.value.trim();
+      if (!url.startsWith('http')) url = `https://${url}`;
+      window.open(url, '_blank');
+    }
+  };
+
+  // قراءة الأقسام النشطة فقط من السحابة
+  const categories = categoriesData.filter((c: any) => c.is_active !== false);
+
+  // سحب الإعدادات الشاملة لحظياً من السحابة
+  const fetchCloudConfig = () => {
+    supabase
+      .from('products')
+      .select('title, description, created_at')
+      .in('title', [
+        '__APP_CONFIG_CATEGORIES__',
+        '__APP_CONFIG_PROVINCES__',
+        '__APP_CONFIG_RATES__',
+        '__APP_CONFIG_NOTICE__',
+        '__APP_CONFIG_MAINTENANCE__',
+        '__APP_CONFIG_SUPPORT__',
+        '__APP_CONFIG_BROADCAST__',
+        '__APP_CONFIG_FEATURED__',
+        '__APP_CONFIG_NAV_ITEMS__',
+        '__APP_CONFIG_BOT_PROTECTION__',
+        '__APP_CONFIG_SETTINGS_PROPOSALS__',
+      ])
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (data && data.length > 0) {
+          const seen = new Set<string>();
+          data.forEach((row) => {
+            if (seen.has(row.title)) return;
+            seen.add(row.title);
+            try {
+              if (row.title === '__APP_CONFIG_CATEGORIES__' && row.description) {
+                const cloudCats = JSON.parse(row.description);
+                if (Array.isArray(cloudCats) && cloudCats.length > 0) {
+                  setCategoriesData(cloudCats);
+                  const firstActive = cloudCats.find((c: any) => c.is_active !== false);
+                  if (firstActive && firstActive.name) {
+                    setActiveCategoryName((prev) => {
+                      if (prev === 'الكل') return 'الكل';
+                      const stillActive = cloudCats.some((c: any) => c.name === prev && c.is_active !== false);
+                      return stillActive ? prev : 'الكل';
+                    });
+                    setProductCategory((prev) => {
+                      const stillActive = cloudCats.some((c: any) => c.name === prev && c.is_active !== false);
+                      return stillActive ? prev : firstActive.name;
+                    });
+                  }
+                }
+              }
+              if (row.title === '__APP_CONFIG_PROVINCES__' && row.description) {
+                const cloudProvs = JSON.parse(row.description);
+                if (Array.isArray(cloudProvs)) {
+                  setProvincesData(cloudProvs);
+                  setSelectedProvince((prev) => (prev ? prev : (cloudProvs[0] || '')));
+                }
+              }
+              if (row.title === '__APP_CONFIG_SETTINGS_PROPOSALS__' && row.description) {
+                const cloudProps = JSON.parse(row.description);
+                if (Array.isArray(cloudProps)) {
+                  setSettingsProposals(cloudProps);
+                }
+              }
+              if (row.title === '__APP_CONFIG_RATES__' && row.description) {
+                const cloudRates = JSON.parse(row.description);
+                if (cloudRates && cloudRates.usd) {
+                  setMarketRates(cloudRates);
+                }
+              }
+              if (row.title === '__APP_CONFIG_NOTICE__' && row.description) {
+                const cloudNotice = JSON.parse(row.description);
+                if (cloudNotice) {
+                  const rawText = typeof cloudNotice === 'string' ? cloudNotice : cloudNotice.text || '';
+                  const cleanText = rawText.trim();
+                  const isActive = typeof cloudNotice === 'object' && 'active' in cloudNotice
+                    ? Boolean(cloudNotice.active && cleanText)
+                    : Boolean(cleanText);
+                  setAdminNotice({
+                    active: isActive,
+                    text: cleanText,
+                  });
+                }
+              }
+              if (row.title === '__APP_CONFIG_MAINTENANCE__' && row.description) {
+                const cloudMaint = JSON.parse(row.description);
+                if (cloudMaint && typeof cloudMaint.enabled === 'boolean') {
+                  setMaintenanceConfig(cloudMaint);
+                }
+              }
+              if (row.title === '__APP_CONFIG_SUPPORT__' && row.description) {
+                const cloudSup = JSON.parse(row.description);
+                if (cloudSup && cloudSup.whatsapp) {
+                  setSupportConfig(cloudSup);
+                }
+              }
+              if (row.title === '__APP_CONFIG_BROADCAST__' && row.description) {
+                const cloudBc = JSON.parse(row.description);
+                if (cloudBc && cloudBc.title) {
+                  setBroadcastConfig(cloudBc);
+                }
+              }
+              if (row.title === '__APP_CONFIG_FEATURED__' && row.description) {
+                const cloudFeat = JSON.parse(row.description);
+                if (Array.isArray(cloudFeat)) {
+                  setFeaturedProductIds(cloudFeat);
+                }
+              }
+              if (row.title === '__APP_CONFIG_NAV_ITEMS__' && row.description) {
+                const cloudNav = JSON.parse(row.description);
+                if (Array.isArray(cloudNav) && cloudNav.length > 0) {
+                  setNavItems(cloudNav);
+                }
+              }
+              if (row.title === '__APP_CONFIG_BOT_PROTECTION__' && row.description) {
+                const cloudBot = JSON.parse(row.description);
+                if (cloudBot && cloudBot.mode) {
+                  setBotProtectionMode(cloudBot.mode);
+                } else if (typeof cloudBot === 'string') {
+                  setBotProtectionMode(cloudBot);
+                }
+              }
+            } catch (e) {}
+          });
+        }
+      });
+  };
+
+  useEffect(() => {
+    fetchCloudConfig();
+    const channel = supabase
+      .channel('cloud_configs_sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        (payload) => {
+          const title = (payload.new as any)?.title || (payload.old as any)?.title;
+          if (title && String(title).startsWith('__APP_CONFIG_')) {
+            fetchCloudConfig();
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // إعداد الوضع الداكن (Dark Mode) مع حفظه في التخزين المحلي
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('souq_syria_dark_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    try {
+      localStorage.setItem('souq_syria_dark_mode', darkMode ? 'true' : 'false');
+    } catch {
+      // هادئ
+    }
+  }, [darkMode]);
+
+  const toggleDarkMode = () => {
+    setDarkMode((prev) => !prev);
+  };
+
+  // حالة تكبير خط نصوص المنشورات فقط (تأتي من المستخدمين وسحاب Supabase)
+  const [postFontScale, setPostFontScale] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('souq_syria_post_font_scale');
+      return saved ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  const handleUpdatePostFontScale = (scale: number) => {
+    setPostFontScale(scale);
+    try {
+      localStorage.setItem('souq_syria_post_font_scale', scale.toString());
+    } catch {
+      // هادئ
+    }
+  };
+
+  // حالة فرز الإعلانات والمنشورات
+  const [sortOrder, setSortOrder] = useState<SortOrderOption>(() => {
+    try {
+      const saved = localStorage.getItem('souq_syria_sort_order');
+      return (saved as SortOrderOption) || 'newest';
+    } catch {
+      return 'newest';
+    }
+  });
+
+  const handleUpdateSortOrder = (order: SortOrderOption) => {
+    setSortOrder(order);
+    try {
+      localStorage.setItem('souq_syria_sort_order', order);
+    } catch {
+      // هادئ
+    }
+  };
+
+  // تأكيد أمان إضافي كجزء أساسي من التطبيق قبل حذف أي إعلان
+  const [productToDelete, setProductToDelete] = useState<ProductItem | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
+
+  // ميزة سحب الصفحة للأسفل لتحديث الصفحة الحالية (Pull-To-Refresh)
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isPulling, setIsPulling] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const touchStartYRef = useRef(0);
+
+  // القسم الرئيسي والفرعي النشط (الافتراضي: الكل لعرض جميع إعلانات الأقسام)
+  const [activeCategoryName, setActiveCategoryName] = useState<string>('الكل');
+  const [activeSubCategory, setActiveSubCategory] = useState<string>('الكل');
+  // فلتر البحث والمحافظة في الواجهة الرئيسية
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterProvince, setFilterProvince] = useState<string>('الكل');
+
+  // المستخدم والمصادقة مع Supabase
+  const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // حالة النافذة العائمة للمصادقة (تسجيل الدخول / إنشاء حساب)
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authModalReason, setAuthModalReason] = useState<string | null>(null);
+  const [authModalInitialMode, setAuthModalInitialMode] = useState<'login' | 'signup'>('login');
+
+
+  // الإشعارات من Supabase
+  const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  // قائمة المنتجات الحقيقية من Supabase
+  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+
+  // حالة منبثقة زر الزائد
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+
+  // حالة واجهة النشر
+  const [showCreateScreen, setShowCreateScreen] = useState(false);
+
+  // الحقول المطلوبة لواجهة نشر المنتج (يدعم حتى 3 صور وعملات متعددة)
+  interface UploadedImageItem {
+    file?: File;
+    preview: string;
+  }
+  const [productImages, setProductImages] = useState<UploadedImageItem[]>([]);
+  const [productCurrency, setProductCurrency] = useState<'SYP' | 'USD'>('SYP');
+  const [productIsNegotiable, setProductIsNegotiable] = useState(false);
+
+  const [productName, setProductName] = useState('');
+  const [productCategory, setProductCategory] = useState<string>('');
+  const [productSubCategory, setProductSubCategory] = useState<string>(''); // إلزامي
+  const [selectedProvince, setSelectedProvince] = useState('');
+  const [productAddress, setProductAddress] = useState('');
+  const [productPrice, setProductPrice] = useState('');
+  const [productWhatsapp, setProductWhatsapp] = useState(''); // رقم واتساب إلزامي
+  const [productDescription, setProductDescription] = useState('');
+
+  // نظام المفضلة (القلب التفاعلي)
+  const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('souq_syria_favs');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const toggleFavorite = (id: string) => {
+    setFavoriteProductIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id];
+      try {
+        localStorage.setItem('souq_syria_favs', JSON.stringify(next));
+      } catch {
+        // هادئ
+      }
+      return next;
+    });
+  };
+
+  // حالة نافذة المعاينة والتكبير للصور (Image Lightbox)
+  const [lightboxImages, setLightboxImages] = useState<string[]>([]);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxTitle, setLightboxTitle] = useState('');
+
+  const handleOpenLightbox = (images: string[], index: number, title: string) => {
+    setLightboxImages(images);
+    setLightboxIndex(index);
+    setLightboxTitle(title);
+    setLightboxOpen(true);
+  };
+
+  // إشعار نسخ الرابط والمشاركة
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const handleShareProduct = async (product: ProductItem) => {
+    const shareText = `${product.title}\nالمحافظة: ${product.province} (${product.location})\nتواصل واتساب: ${product.whatsapp}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: product.title,
+          text: shareText,
+          url: window.location.href,
+        });
+        return;
+      } catch {
+        // تم الإلغاء من قبل المستخدم أو غير مدعوم
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(`${shareText}\n${window.location.origin}`);
+      setToastMessage('تم نسخ تفاصيل ورابط الإعلان للمشاركة بنجاح!');
+    } catch {
+      setToastMessage('تم تجهيز الرابط للمشاركة!');
+    }
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  // حالة الرفع والنشر
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [publishStep, setPublishStep] = useState<string>('');
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishSuccess, setPublishSuccess] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // الاستماع للجلسة الحالية في Supabase
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setCurrentUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // جلب المنتجات والإشعارات من Supabase مع ربط أسماء البائعين
+  const fetchProducts = async () => {
+    try {
+      setLoadingProducts(true);
+      // الجديد (أضفنا شرط المقبولة فقط واستبعاد ملفات النظام):
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('status', 'approved')
+        .neq('category', '__SYSTEM_CONFIG__')
+        .order('created_at', { ascending: false });
+
+      let combinedData: any[] = data || [];
+
+      // جلب إعلانات المستخدم الخاصة به (بما فيها المعلقة قيد المراجعة) لتظهر له في "منتجاتي"
+      if (currentUser?.id) {
+        try {
+          const { data: myData } = await supabase
+            .from('products')
+            .select('*')
+            .eq('user_id', currentUser.id)
+            .neq('category', '__SYSTEM_CONFIG__')
+            .order('created_at', { ascending: false });
+
+          if (myData && myData.length > 0) {
+            const seenIds = new Set(combinedData.map((p) => p.id));
+            const newMine = myData.filter((p) => !seenIds.has(p.id));
+            combinedData = [...newMine, ...combinedData];
+          }
+        } catch {
+          // هادئ
+        }
+      }
+
+      if (!error && combinedData) {
+        // جلب أسماء البائعين من profiles إذا كانت مسجلة
+        const userIds = Array.from(new Set(combinedData.map((p) => p.user_id).filter(Boolean)));
+        let profileMap: Record<string, string> = {};
+        if (userIds.length > 0) {
+          try {
+            const { data: profs } = await supabase
+              .from('profiles')
+              .select('id, full_name')
+              .in('id', userIds);
+            if (profs) {
+              profs.forEach((pr) => {
+                if (pr.full_name) profileMap[pr.id] = pr.full_name;
+              });
+            }
+          } catch {
+            // هادئ
+          }
+        }
+
+        const enriched = combinedData.map((item) => ({
+          ...item,
+          seller_name: item.user_id ? profileMap[item.user_id] || 'معلن في سوق سوريا' : 'معلن في سوق سوريا',
+        }));
+        setProducts(enriched as ProductItem[]);
+      }
+    } catch {
+      // التعامل الهادئ عند عدم وجود جدول حتى ينشئه المستخدم
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  const fetchNotifications = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setNotifications(data as AdminNotification[]);
+      }
+    } catch {
+      // هادئ
+    }
+  };
+
+  useEffect(() => {
+    fetchProducts();
+    fetchNotifications();
+  }, [currentUser?.id]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  // اختيار وإرفاق صور المنتج (حتى 3 صور) مع ضغطها محلياً
+  const handleMultiImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const remainingSlots = 3 - productImages.length;
+    if (remainingSlots <= 0) return;
+    const allowedFiles = files.slice(0, remainingSlots);
+
+    const newItems: UploadedImageItem[] = [];
+    for (const file of allowedFiles) {
+      try {
+        const { dataUrl } = await compressImage(file, 1200, 1200, 0.78);
+        newItems.push({ file, preview: dataUrl });
+      } catch {
+        // كبديل
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setProductImages((prev) => [
+            ...prev,
+            { file, preview: reader.result as string },
+          ].slice(0, 3));
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    if (newItems.length > 0) {
+      setProductImages((prev) => [...prev, ...newItems].slice(0, 3));
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeImageAtIndex = (index: number) => {
+    setProductImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // معالجة ونشر الإعلان فعلياً إلى السحابة
+  const handlePublishSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPublishError(null);
+
+    // التحقق من الحقول الإلزامية
+    if (!productName.trim()) {
+      setPublishError('يرجى كتابة اسم المنتج');
+      return;
+    }
+    if (!productCategory) {
+      setPublishError('يرجى تحديد القسم الرئيسي');
+      return;
+    }
+    if (!productSubCategory) {
+      setPublishError('يرجى اختيار القسم الفرعي (إلزامي)');
+      return;
+    }
+    if (!selectedProvince) {
+      setPublishError('يرجى اختيار المحافظة');
+      return;
+    }
+    if (!productAddress.trim()) {
+      setPublishError('يرجى كتابة العنوان والمنطقة');
+      return;
+    }
+    if (!productWhatsapp.trim()) {
+      setPublishError('يرجى إدخال رقم الواتساب للتواصل (إلزامي)');
+      return;
+    }
+
+    setIsPublishing(true);
+    setPublishStep('جارٍ معالجة الصورة...');
+
+    try {
+      let finalImageUrl = '';
+
+      // 1. رفع الصور
+      if (productImages.length > 0) {
+        setPublishStep(`جارٍ رفع ${productImages.length} صور...`);
+        const uploadedUrls: string[] = [];
+        for (let i = 0; i < productImages.length; i++) {
+          setPublishStep(`جارٍ ضغط ورفع الصورة (${i + 1} من ${productImages.length})...`);
+          const imgItem = productImages[i];
+          const uploadedUrl = await uploadImageToSupabase(imgItem.file || imgItem.preview);
+          uploadedUrls.push(uploadedUrl);
+        }
+        finalImageUrl = serializeProductImages(uploadedUrls);
+      }
+
+      // 2. تنسيق السعر بالعملة المختارة وقابلية التفاوض
+      const formattedPrice = formatPriceWithCurrency(
+        productPrice.trim(),
+        productCurrency,
+        productIsNegotiable
+      );
+
+      // 3. حفظ الإعلان
+      setPublishStep('جارٍ حفظ الإعلان...');
+      const newProductRecord = {
+        title: productName.trim(),
+        category: productCategory,
+        sub_category: productSubCategory,
+        province: selectedProvince,
+        location: productAddress.trim(),
+        price: formattedPrice || null,
+        whatsapp: productWhatsapp.trim(),
+        image_url: finalImageUrl || null,
+        description: productDescription.trim() || null,
+        user_id: currentUser?.id || null,
+        status: 'pending', // <--- هذا السطر الجديد ليذهب للإدارة فوراً للمراجعة
+      };
+
+      const { data, error } = await supabase
+        .from('products')
+        .insert([newProductRecord])
+        .select();
+
+      if (error) {
+        throw error;
+      }
+
+      // إضافة الإعلان محلياً وتحديث القائمة
+      if (data && data[0]) {
+        const enrichedNew = {
+          ...data[0],
+          seller_name: currentUser?.user_metadata?.full_name || 'أنت (المعلن)',
+        };
+        setProducts((prev) => [enrichedNew as ProductItem, ...prev]);
+      } else {
+        fetchProducts();
+      }
+
+      setPublishSuccess(true);
+      setTimeout(() => {
+        setPublishSuccess(false);
+        setIsPublishing(false);
+        // تصفير الحقول
+        setProductName('');
+        setProductSubCategory('');
+        setSelectedProvince('');
+        setProductAddress('');
+        setProductPrice('');
+        setProductCurrency('SYP');
+        setProductIsNegotiable(false);
+        setProductWhatsapp('');
+        setProductDescription('');
+        setProductImages([]);
+        setShowCreateScreen(false);
+        setActiveTab('home');
+        setActiveCategoryName('الكل');
+        setActiveSubCategory('الكل');
+      }, 1200);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'حدث خطأ أثناء نشر الإعلان';
+      setPublishError(message);
+      setIsPublishing(false);
+    }
+  };
+
+  // تصفية المنتجات في الرئيسية (فقط المقبولة والمعتمدة وإعلانات المستخدم الحالي المعتمدة أو قيد المراجعة)
+  const approvedProducts = products.filter(
+    (p) =>
+      (p.status === 'approved' || (currentUser && p.user_id === currentUser.id)) &&
+      p.category !== '__SYSTEM_CONFIG__'
+  );
+  const filteredCategoryItems = filterProducts(approvedProducts, {
+    category: activeCategoryName,
+    subCategory: activeSubCategory,
+    province: filterProvince,
+    searchQuery: searchQuery,
+  });
+
+  // فرز الإعلانات والمنشورات حسب اختيار المستخدم (الأحدث، الأقدم، الأقل سعراً، الأعلى سعراً)
+  const currentCategoryItems = [...filteredCategoryItems].sort((a, b) => {
+    if (sortOrder === 'oldest') {
+      return new Date(a.created_at || '').getTime() - new Date(b.created_at || '').getTime();
+    }
+    if (sortOrder === 'price_asc') {
+      const priceA = parseFloat(a.price?.replace(/[^\d.]/g, '') || '0') || 0;
+      const priceB = parseFloat(b.price?.replace(/[^\d.]/g, '') || '0') || 0;
+      return priceA - priceB;
+    }
+    if (sortOrder === 'price_desc') {
+      const priceA = parseFloat(a.price?.replace(/[^\d.]/g, '') || '0') || 0;
+      const priceB = parseFloat(b.price?.replace(/[^\d.]/g, '') || '0') || 0;
+      return priceB - priceA;
+    }
+    // الافتراضي: الأحدث أولاً
+    return new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime();
+  });
+
+  // إعلانات المستخدم المسجل حالياً
+  const myProducts = products.filter((i) => currentUser && i.user_id === currentUser.id);
+
+  // تأكيد أمان إضافي كجزء أساسي من التطبيق قبل تنفيذ حذف الإعلان
+  const handleConfirmDeleteProduct = async () => {
+    if (!productToDelete) return;
+    setIsDeletingProduct(true);
+    try {
+      const { error } = await supabase.from('products').delete().eq('id', productToDelete.id);
+      if (!error) {
+        setProducts((prev) => prev.filter((p) => p.id !== productToDelete.id));
+        setToastMessage('تم حذف الإعلان نهائياً بنجاح');
+        setTimeout(() => setToastMessage(null), 2500);
+      }
+    } catch {
+      // هادئ
+    } finally {
+      setIsDeletingProduct(false);
+      setProductToDelete(null);
+    }
+  };
+
+  // ميزة سحب الصفحة للأسفل لتحديث الصفحة الحالية (Pull-to-refresh) عبر كامل التطبيق
+  useEffect(() => {
+    let startY = 0;
+    let isTracking = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.scrollY <= 0) {
+        startY = e.touches[0].clientY;
+        isTracking = true;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!isTracking || isRefreshing) return;
+      if (window.scrollY > 0) {
+        setPullDistance(0);
+        isTracking = false;
+        return;
+      }
+      const currentY = e.touches[0].clientY;
+      const delta = currentY - startY;
+      if (delta > 0) {
+        const dist = Math.min(delta * 0.45, 80);
+        setPullDistance(dist);
+      } else {
+        setPullDistance(0);
+      }
+    };
+
+    const onTouchEnd = async () => {
+      if (!isTracking) return;
+      isTracking = false;
+      setPullDistance((currentDist) => {
+        if (currentDist >= 55) {
+          setIsRefreshing(true);
+          Promise.all([
+            fetchProducts(),
+            fetchNotifications(),
+            fetchCloudConfig(),
+          ]).finally(() => {
+            setToastMessage('تم تحديث الصفحة الحالية بنجاح ✓');
+            setTimeout(() => setToastMessage(null), 2000);
+            setTimeout(() => {
+              setIsRefreshing(false);
+              setPullDistance(0);
+            }, 500);
+          });
+          return 60;
+        }
+        return 0;
+      });
+    };
+
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: true });
+    window.addEventListener('touchend', onTouchEnd);
+
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [isRefreshing]);
+
+  // دعم السحب بالفأرة على الحاسوب للتجربة والتصفح السريع
+  const handleTouchStart = (e: React.MouseEvent) => {
+    if (window.scrollY <= 0) {
+      touchStartYRef.current = e.clientY;
+      setIsPulling(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.MouseEvent) => {
+    if (!isPulling || isRefreshing) return;
+    if (window.scrollY > 0) {
+      setPullDistance(0);
+      setIsPulling(false);
+      return;
+    }
+    const deltaY = e.clientY - touchStartYRef.current;
+    if (deltaY > 0) {
+      const distance = Math.min(deltaY * 0.45, 80);
+      setPullDistance(distance);
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (!isPulling) return;
+    setIsPulling(false);
+    if (pullDistance >= 55 && !isRefreshing) {
+      setIsRefreshing(true);
+      setPullDistance(60);
+      try {
+        await Promise.all([
+          fetchProducts(),
+          fetchNotifications(),
+          fetchCloudConfig(),
+        ]);
+        setToastMessage('تم تحديث الصفحة الحالية بنجاح ✓');
+        setTimeout(() => setToastMessage(null), 2000);
+      } catch {
+        // هادئ
+      } finally {
+        setTimeout(() => {
+          setIsRefreshing(false);
+          setPullDistance(0);
+        }, 500);
+      }
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
+
+  const handleSelectCategory = (catName: string) => {
+    setActiveCategoryName(catName);
+    setActiveSubCategory('الكل');
+  };
+
+  const currentCategoryData = categories.find((c) => c.name === activeCategoryName);
+  const activeCreateCategoryData = categories.find((c) => c.name === productCategory);
+
+  // ==========================================
+  // واجهة نشر الإعلان
+  // ==========================================
+  if (showCreateScreen) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 25 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+        onMouseDown={handleTouchStart}
+        onMouseMove={handleTouchMove}
+        onMouseUp={handleTouchEnd}
+        className={`min-h-screen ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-800'} flex flex-col justify-between select-none relative`}
+      >
+        {/* شريط السحب لتحديث الصفحة الحالية (Pull-to-refresh) */}
+        {(pullDistance > 0 || isRefreshing) && (
+          <div
+            style={{
+              transform: `translateY(${isRefreshing ? 12 : Math.max(pullDistance - 50, 8)}px)`,
+              opacity: isRefreshing ? 1 : Math.min(pullDistance / 40, 1),
+            }}
+            className="fixed top-0 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-transform duration-100 ease-out"
+          >
+            <div className="flex items-center gap-2 px-4 py-1.5 rounded-full shadow-lg border backdrop-blur-md bg-white/95 border-slate-200 text-slate-800">
+              <RefreshCw
+                className={`w-4 h-4 text-emerald-500 ${isRefreshing ? 'animate-spin' : ''}`}
+                style={!isRefreshing ? { transform: `rotate(${pullDistance * 5}deg)` } : undefined}
+              />
+              <span className="text-xs font-bold">
+                {isRefreshing
+                  ? 'جاري تحديث الصفحة...'
+                  : pullDistance >= 55
+                  ? 'أفلت للتحديث الآن'
+                  : 'اسحب للأسفل لتحديث الصفحة'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* شريط أعلى واجهة النشر */}
+        <header className="sticky top-0 z-30 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 shadow-xs">
+          <div className="max-w-3xl mx-auto w-full flex items-center justify-between">
+            <button
+              type="button"
+              disabled={isPublishing}
+              onClick={() => setShowCreateScreen(false)}
+              className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer p-1"
+            >
+              <ArrowRight className="w-5 h-5" />
+              <span>رجوع</span>
+            </button>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">نشر إعلان جديد</h2>
+            <div className="w-12"></div>
+          </div>
+        </header>
+
+        {/* نموذج واجهة نشر المنتج المتجاوب */}
+        <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-5 overflow-y-auto">
+          {!currentUser ? (
+            <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm text-center flex flex-col items-center justify-center my-8 space-y-4">
+              <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                <LogIn className="w-8 h-8" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">تسجيل الدخول مطلوب للنشر</h3>
+                <p className="text-xs text-slate-500 mt-1 max-w-xs leading-relaxed mx-auto">
+                  لتتمكن من نشر إعلانك في سوق سوريا والتمكن من إدارته وحذفه في أي وقت، يرجى تسجيل الدخول أو إنشاء حساب جديد.
+                </p>
+              </div>
+              <div className="w-full space-y-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthModalReason('سجّل الدخول للمتابعة إلى واجهة نشر إعلانك');
+                    setAuthModalInitialMode('login');
+                    setShowAuthModal(true);
+                  }}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>تسجيل الدخول</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthModalReason('أنشئ حساباً جديداً لنشر إعلانك في سوق سوريا');
+                    setAuthModalInitialMode('signup');
+                    setShowAuthModal(true);
+                  }}
+                  className="w-full py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl text-xs transition-colors border border-slate-200 cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>إنشاء حساب جديد</span>
+                </button>
+              </div>
+            </div>
+          ) : publishSuccess ? (
+            <div className="bg-white rounded-2xl p-8 border border-emerald-100 shadow-sm text-center flex flex-col items-center justify-center my-12">
+              <CheckCircle2 className="w-16 h-16 text-emerald-500 mb-3 animate-bounce" />
+              <h3 className="text-lg font-bold text-slate-900 mb-1">تم نشر الإعلان بنجاح!</h3>
+              <p className="text-xs text-slate-500">جاري توجيهك إلى صفحة الإعلانات...</p>
+            </div>
+          ) : (
+            <form onSubmit={handlePublishSubmit} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-4">
+              
+              {publishError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{publishError}</span>
+                </div>
+              )}
+
+              {/* 1. صور المنتج أو الإعلان (حتى 3 صور كحد أقصى) */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-slate-700">
+                    1. صور المنتج أو الإعلان (حتى 3 صور كحد أقصى)
+                  </label>
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    {productImages.length} من 3 صور
+                  </span>
+                </div>
+
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleMultiImageChange}
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  id="product-images-upload"
+                />
+
+                {productImages.length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      {productImages.map((img, idx) => (
+                        <div
+                          key={idx}
+                          className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-50 aspect-square group shadow-2xs"
+                        >
+                          <img
+                            src={img.preview}
+                            alt={`صورة ${idx + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-bold">
+                            صورة {idx + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeImageAtIndex(idx)}
+                            className="absolute bottom-1.5 left-1.5 p-1 rounded-lg bg-red-600/90 text-white hover:bg-red-700 transition-colors shadow-xs cursor-pointer"
+                            title="حذف هذه الصورة"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+
+                      {productImages.length < 3 && (
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="rounded-xl border-2 border-dashed border-slate-300 hover:border-emerald-500 flex flex-col items-center justify-center gap-1 bg-slate-50/50 hover:bg-emerald-50/20 text-slate-500 hover:text-emerald-700 transition-all aspect-square cursor-pointer p-2"
+                        >
+                          <Plus className="w-5 h-5" />
+                          <span className="text-[10px] font-bold">إضافة صورة</span>
+                          <span className="text-[9px] text-slate-400">({3 - productImages.length} متبقية)</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      * تظهر الصور للمشاهدين مجمّعة في بطاقة واحدة كمنشورات التواصل، مع إمكانية النقر والتكبير.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-5 flex flex-col items-center justify-center gap-2 bg-slate-50/50 hover:bg-emerald-50/20 transition-all cursor-pointer text-slate-500 hover:text-emerald-700"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-white shadow-xs flex items-center justify-center text-slate-400">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                    <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى 3 صور)</span>
+                    <span className="text-[10px] text-slate-400">PNG, JPG (يتم ضغطها تلقائياً قبل الرفع)</span>
+                  </button>
+                )}
+              </div>
+
+              {/* 2. اسم المنتج */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  2. اسم المنتج *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={productName}
+                  onChange={(e) => setProductName(e.target.value)}
+                  placeholder="أدخل اسم المنتج أو الإعلان..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                />
+              </div>
+
+              {/* اختيار القسم الرئيسي والفرعي في شبكة متجاوبة */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    القسم الرئيسي *
+                  </label>
+                  {categories.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 dark:text-slate-400 font-medium text-right">
+                      لا توجد أقسام
+                    </div>
+                  ) : (
+                    <select
+                      required
+                      value={productCategory}
+                      onChange={(e) => {
+                        setProductCategory(e.target.value);
+                        setProductSubCategory('');
+                      }}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="" disabled>-- اختر القسم --</option>
+                      {categories.map((cat) => (
+                        <option key={cat.id || cat.name} value={cat.name}>
+                          {cat.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    القسم الفرعي *
+                  </label>
+                  {activeCreateCategoryData?.subCategories && activeCreateCategoryData.subCategories.length > 0 ? (
+                    <select
+                      required
+                      value={productSubCategory}
+                      onChange={(e) => setProductSubCategory(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="">-- اختر القسم الفرعي --</option>
+                      {activeCreateCategoryData.subCategories.map((sub) => (
+                        <option key={sub} value={sub}>
+                          {sub}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      required
+                      value={productSubCategory}
+                      onChange={(e) => setProductSubCategory(e.target.value)}
+                      placeholder="اكتب القسم الفرعي..."
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
+                    />
+                  )}
+                </div>
+              </div>
+
+              {/* المحافظة والعنوان في شبكة متجاوبة */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    المحافظة *
+                  </label>
+                  <div className="relative">
+                    {provincesData.length > 0 ? (
+                      <select
+                        required
+                        value={selectedProvince}
+                        onChange={(e) => setSelectedProvince(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                      >
+                        <option value="" disabled>
+                          اختر المحافظة
+                        </option>
+                        {provincesData.map((prov) => (
+                          <option key={prov} value={prov}>
+                            {prov}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={selectedProvince}
+                        onChange={(e) => setSelectedProvince(e.target.value)}
+                        placeholder="اكتب اسم المحافظة أو المدينة..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
+                      />
+                    )}
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                      <MapPin className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    العنوان والمنطقة *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={productAddress}
+                    onChange={(e) => setProductAddress(e.target.value)}
+                    placeholder="مثال: دمشق - المزة... إلخ"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {/* 5. رقم الواتساب للتواصل (إلزامي قبل النشر كما طلبت) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  5. رقم الواتساب للتواصل * (إلزامي)
+                </label>
+                <div className="relative">
+                  <input
+                    type="tel"
+                    required
+                    dir="ltr"
+                    value={productWhatsapp}
+                    onChange={(e) => setProductWhatsapp(e.target.value)}
+                    placeholder="مثال: 0912345678 أو 9639..."
+                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-right"
+                  />
+                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-600">
+                    <MessageCircle className="w-4 h-4" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 6. السعر والعملة وقابلية التفاوض */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  6. السعر والعملة (اختياري)
+                </label>
+
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={productPrice}
+                      onChange={(e) => setProductPrice(e.target.value)}
+                      placeholder="أدخل المبلغ..."
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    />
+                  </div>
+
+                  {/* اختيار العملة: ليرة سورية أو دولار */}
+                  <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setProductCurrency('SYP')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        productCurrency === 'SYP'
+                          ? 'bg-white text-emerald-700 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      ل.س (سوري)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductCurrency('USD')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        productCurrency === 'USD'
+                          ? 'bg-white text-emerald-700 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      $ (دولار)
+                    </button>
+                  </div>
+                </div>
+
+                {/* خيار قابل للتفاوض */}
+                <label className="flex items-center gap-2 cursor-pointer pt-0.5 select-none">
+                  <input
+                    type="checkbox"
+                    checked={productIsNegotiable}
+                    onChange={(e) => setProductIsNegotiable(e.target.checked)}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                  />
+                  <span className="text-xs font-medium text-slate-700">
+                    السعر قابل للتفاوض والمفاصلة
+                  </span>
+                </label>
+              </div>
+
+              {/* تفاصيل إضافية */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  تفاصيل إضافية عن المنتج (اختياري)
+                </label>
+                <textarea
+                  rows={3}
+                  value={productDescription}
+                  onChange={(e) => setProductDescription(e.target.value)}
+                  placeholder="أدخل أي مواصفات أو تفاصيل للمشتري..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm resize-none"
+                />
+              </div>
+
+              {/* زر النشر الفعلي مع مؤشر التحميل */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={isPublishing}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-xl text-sm transition-all shadow-md cursor-pointer flex items-center justify-center gap-2 disabled:opacity-75 disabled:cursor-wait"
+                >
+                  {isPublishing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{publishStep || 'جارٍ نشر الإعلان...'}</span>
+                    </>
+                  ) : (
+                    <span>نشر الإعلان الآن</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+        </main>
+      </motion.div>
+    );
+  }
+
+  // ==========================================
+  // الواجهة الرئيسية
+  // ==========================================
+  return (
+    <div
+      onMouseDown={handleTouchStart}
+      onMouseMove={handleTouchMove}
+      onMouseUp={handleTouchEnd}
+      className={`min-h-screen ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-800'} flex flex-col justify-between select-none transition-colors duration-150 relative`}
+    >
+      {/* شريط السحب لتحديث الصفحة الحالية (Pull-to-refresh) */}
+      {(pullDistance > 0 || isRefreshing) && (
+        <div
+          style={{
+            transform: `translateY(${isRefreshing ? 12 : Math.max(pullDistance - 50, 8)}px)`,
+            opacity: isRefreshing ? 1 : Math.min(pullDistance / 40, 1),
+          }}
+          className="fixed top-0 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-transform duration-100 ease-out"
+        >
+          <div
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full shadow-lg border backdrop-blur-md ${
+              darkMode
+                ? 'bg-slate-900/95 border-slate-700 text-slate-100'
+                : 'bg-white/95 border-slate-200 text-slate-800'
+            }`}
+          >
+            <RefreshCw
+              className={`w-4 h-4 text-emerald-500 ${isRefreshing ? 'animate-spin' : ''}`}
+              style={!isRefreshing ? { transform: `rotate(${pullDistance * 5}deg)` } : undefined}
+            />
+            <span className="text-xs font-bold">
+              {isRefreshing
+                ? 'جاري تحديث الصفحة...'
+                : pullDistance >= 55
+                ? 'أفلت للتحديث الآن'
+                : 'اسحب للأسفل لتحديث الصفحة'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* رسالة الإذاعة العامة اللحظية (Flash Broadcast) إذا كانت مفعلة ولم تُغلق */}
+      {broadcastConfig?.active && broadcastConfig.id !== dismissedBroadcastId && (
+        <aside
+          aria-label="إذاعة عامة"
+          className={`w-full py-2.5 px-4 shadow-sm shrink-0 flex items-center justify-between gap-3 text-right animate-in fade-in ${
+            broadcastConfig.type === 'urgent'
+              ? 'bg-rose-600 text-white'
+              : broadcastConfig.type === 'warning'
+              ? 'bg-amber-600 text-white'
+              : broadcastConfig.type === 'promo'
+              ? 'bg-emerald-600 text-white'
+              : 'bg-indigo-600 text-white'
+          }`}
+        >
+          <div className="max-w-7xl mx-auto w-full px-2 sm:px-4 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <Sparkles className="w-4 h-4 shrink-0 text-white/90" />
+              <div className="flex flex-col min-w-0 text-right">
+                <span className="text-xs font-bold leading-tight">{broadcastConfig.title}</span>
+                <span className="text-[11px] text-white/90 leading-tight truncate">{broadcastConfig.message}</span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDismissedBroadcastId(broadcastConfig.id);
+                try {
+                  sessionStorage.setItem('souq_dismissed_broadcast_id', broadcastConfig.id);
+                } catch {}
+              }}
+              className="px-2.5 py-1 rounded-lg bg-black/20 hover:bg-black/30 text-white text-[10px] font-bold shrink-0 cursor-pointer"
+            >
+              إغلاق
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* أعلى الشاشة: اسم التطبيق وهو سوق سوريا، وفي أعلى اليمين زر تسجيل الدخول، وفي أعلى اليسار الجرس والإعدادات على يساره */}
+      <header className={`sticky top-0 z-30 ${darkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white border-slate-200'} border-b px-4 py-2.5 shadow-xs transition-colors duration-150`}>
+        <div className="max-w-7xl mx-auto w-full px-2 sm:px-4 relative flex items-center justify-between">
+          {/* في أعلى اليمين: زر عائم صغير ومضبوط لتسجيل الدخول لا يغطي اسم سوق سوريا */}
+          <div className="flex items-center">
+            {!currentUser ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthModalReason(null);
+                  setAuthModalInitialMode('login');
+                  setShowAuthModal(true);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                aria-label="تسجيل دخول"
+              >
+                <LogIn className="w-3 h-3" />
+                <span>تسجيل دخول</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveTab('me')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl ${darkMode ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800' : 'bg-emerald-50 text-emerald-800 border-emerald-100'} text-[11px] font-bold transition-colors cursor-pointer border`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="max-w-[75px] truncate">
+                  {currentUser.user_metadata?.full_name?.split(' ')[0] || 'حسابي'}
+                </span>
+              </button>
+            )}
+          </div>
+
+          {/* اسم التطبيق في الوسط: بالعربية وتحته بالإنجليزية بلون أسود وحواف بيضاء */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+            <h1 className={`text-lg sm:text-xl font-bold tracking-tight leading-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              سوق سوريا
+            </h1>
+            <span
+              className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase text-black"
+              style={{
+                textShadow:
+                  '1px 1px 0 #ffffff, -1px -1px 0 #ffffff, 1px -1px 0 #ffffff, -1px 1px 0 #ffffff, 0 1px 0 #ffffff, 0 -1px 0 #ffffff, 1px 0 0 #ffffff, -1px 0 0 #ffffff',
+              }}
+            >
+              Souq Syria
+            </span>
+          </div>
+
+          {/* في أعلى اليسار: جرس الإشعارات وإلى يساره أيقونة الإعدادات */}
+          <div className="flex items-center gap-1">
+            {/* في اليمين (ضمن الترتيب العربي): جرس الإشعارات (يطلب تسجيل دخول في وضع الضيف) */}
+            <button
+              type="button"
+              onClick={() => {
+                if (!currentUser) {
+                  setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للاطلاع على الإشعارات والتنبيهات المخصصة لك');
+                  setAuthModalInitialMode('login');
+                  setShowAuthModal(true);
+                } else {
+                  setShowNotifications(true);
+                }
+              }}
+              className={`relative p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
+              aria-label="الإشعارات"
+              title="الإشعارات"
+            >
+              <Bell className="w-5 h-5" />
+              {unreadCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white" />
+              )}
+            </button>
+
+            {/* على يسار الجرس: أيقونة الإعدادات (تطلب تسجيل دخول في وضع الضيف) */}
+            <button
+              type="button"
+              onClick={() => {
+                if (!currentUser) {
+                  setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للوصول إلى إعدادات التطبيق وتخصيص تجربتك');
+                  setAuthModalInitialMode('login');
+                  setShowAuthModal(true);
+                } else {
+                  setShowSettingsModal(true);
+                }
+              }}
+              className={`p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
+              aria-label="إعدادات التطبيق"
+              title="إعدادات التطبيق"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* شريط الملاحظة الإدارية القابل للتحكم من السحابة والإدارة: يظهر فقط إذا أرسلت الإدارة ملاحظة غير فارغة */}
+      {adminNotice?.active && Boolean(adminNotice?.text && adminNotice.text.trim().length > 0) && (
+        <aside
+          aria-label="تنبيه إداري"
+          className="w-full bg-red-50/95 dark:bg-red-950/70 border-b border-red-200/90 dark:border-red-900/60 py-2 px-3 transition-colors shrink-0 animate-in fade-in"
+        >
+          <div className="max-w-7xl mx-auto w-full px-2 sm:px-4 flex items-center justify-center gap-2 text-red-600 dark:text-red-400">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-500 self-center" />
+            <div className="flex flex-col text-center leading-tight">
+              <span className="text-[11px] sm:text-xs font-semibold">
+                {adminNotice.text.trim()}
+              </span>
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {/* شريط الأقسام والمصنفات في الرئيسية تحت الهيدر مباشرة */}
+      {activeTab === 'home' && (
+        <div className={`${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} border-b sticky top-[53px] z-20 shadow-2xs transition-colors duration-150`}>
+          <div className="max-w-7xl mx-auto w-full">
+            {/* شريط البحث وفلترة المحافظة */}
+            <div className="px-4 pt-2.5 pb-1 flex items-center gap-2 max-w-xl">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="ابحث عن اسم منتج أو منطقة..."
+                  className={`w-full pl-8 pr-8 py-1.5 rounded-xl ${
+                    darkMode
+                      ? 'bg-slate-800 text-slate-100 border-slate-700 placeholder:text-slate-500 focus:bg-slate-800'
+                      : 'bg-slate-100 text-slate-800 border-slate-200 placeholder:text-slate-400 focus:bg-white'
+                  } border focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs transition-all`}
+                />
+                <Search className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                    aria-label="مسح البحث"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <select
+                value={filterProvince}
+                onChange={(e) => setFilterProvince(e.target.value)}
+                className={`px-2.5 py-1.5 rounded-xl border ${
+                  darkMode
+                    ? 'border-slate-700 bg-slate-800 text-slate-200'
+                    : 'border-slate-200 bg-slate-100 text-slate-700'
+                } text-[11px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500`}
+                aria-label="تصفية حسب المحافظة"
+              >
+                <option value="الكل">كل المحافظات</option>
+                {provincesData.map((prov) => (
+                  <option key={prov} value={prov}>
+                    {prov}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 1. الشريط الرئيسي للأقسام */}
+            <div className="px-4 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar scroll-smooth">
+              {/* زر الكل يوضع أولاً قبل تكرار الأقسام */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveCategoryName('الكل');
+                  setActiveSubCategory('الكل');
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                  activeCategoryName === 'الكل'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : darkMode
+                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                الكل
+              </button>
+
+              {/* ثم يليه مصفوفة الأقسام الحالية كما هي */}
+              {categories.map((cat) => {
+                const isSelected = activeCategoryName === cat.name;
+                return (
+                  <button
+                    key={cat.id || cat.name}
+                    type="button"
+                    onClick={() => handleSelectCategory(cat.name)}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 ${
+                      isSelected
+                        ? 'bg-emerald-600 text-white shadow-xs scale-[1.02]'
+                        : darkMode
+                        ? 'bg-slate-800 text-slate-300 hover:bg-slate-750 hover:text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+                    }`}
+                  >
+                    {cat.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 2. الأقسام الفرعية التابعة للقسم المختار */}
+            {currentCategoryData && currentCategoryData.subCategories.length > 0 && (
+              <div className={`px-4 pb-2 pt-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-slate-50/70 border-slate-100'} border-t`}>
+                <button
+                  type="button"
+                  onClick={() => setActiveSubCategory('الكل')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                    activeSubCategory === 'الكل'
+                      ? 'bg-slate-800 text-white shadow-2xs'
+                      : darkMode
+                      ? 'bg-slate-800/80 text-slate-300 border border-slate-700 hover:bg-slate-700'
+                      : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  الكل
+                </button>
+                {currentCategoryData.subCategories.map((sub) => {
+                  const isSubSelected = activeSubCategory === sub;
+                  return (
+                    <button
+                      key={sub}
+                      type="button"
+                      onClick={() => setActiveSubCategory(sub)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                        isSubSelected
+                          ? 'bg-slate-800 text-white shadow-2xs'
+                          : darkMode
+                          ? 'bg-slate-800/80 text-slate-300 border border-slate-700 hover:bg-slate-700 hover:text-white'
+                          : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100 hover:text-slate-700'
+                      }`}
+                    >
+                      {sub}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* المحتوى الرئيسي المتجاوب مع انتقال احترافي بين الأقسام */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 py-4 sm:py-6 flex flex-col overflow-x-hidden">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 14, scale: 0.99 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -12, scale: 0.99 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="flex-1 flex flex-col"
+          >
+            {activeTab === 'home' ? (
+          <div className="flex-1 flex flex-col">
+            {loadingProducts ? (
+              <div className="flex-1 flex items-center justify-center py-20 text-slate-400">
+                <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
+              </div>
+            ) : currentCategoryItems.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center py-20 text-center">
+                <p className="text-sm font-medium text-slate-400">
+                  لا توجد منشورات حالياً في هذا القسم
+                </p>
+              </div>
+            ) : (
+              <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+                {currentCategoryItems.map((item) => (
+                  <ProductCard
+                    key={item.id}
+                    item={item}
+                    isFavorite={favoriteProductIds.includes(item.id)}
+                    onToggleFavorite={toggleFavorite}
+                    onOpenLightbox={handleOpenLightbox}
+                    onShare={handleShareProduct}
+                    fontScale={postFontScale}
+                    isFeatured={featuredProductIds.includes(item.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'rates' ? (
+          <div className="flex-1 flex flex-col py-2 space-y-3.5">
+            {/* بطاقة الترويسة */}
+            <div className={`p-4 rounded-2xl border shadow-2xs flex items-center justify-between ${
+              darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center border border-amber-500/20">
+                  <Coins className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                      أسعار صرف العملات والذهب
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      مباشر
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                    تُحدث دورياً من إدارة سوق سوريا
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {!marketRates ? (
+              <div className={`p-8 text-center space-y-3 rounded-2xl border ${
+                darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-600'
+              }`}>
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto">
+                  <Coins className="w-6 h-6" />
+                </div>
+                <h4 className="font-bold text-sm">لا توجد أسعار صرف متوفرة حالياً</h4>
+                <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+                  سيتم عرض أسعار العملات والذهب فور تحديثها.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                {/* 1. الدولار الأمريكي */}
+                {marketRates.usd && (
+                  <div className={`p-4 rounded-2xl border shadow-2xs space-y-3 ${
+                    darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-xs border border-emerald-100 dark:border-emerald-800">
+                          $
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-xs text-slate-900 dark:text-slate-100">دولار أمريكي</h4>
+                          <span className="text-[10px] text-slate-400">USD / SYP</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="p-3 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">شراء</span>
+                        <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 block">
+                          {marketRates.usd.buy ? marketRates.usd.buy.toLocaleString('ar-SY') + ' ل.س' : 'غير متوفر'}
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">مبيع</span>
+                        <span className="text-sm font-black text-slate-800 dark:text-slate-200 block">
+                          {marketRates.usd.sell ? marketRates.usd.sell.toLocaleString('ar-SY') + ' ل.س' : 'غير متوفر'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. اليورو الأوروبي */}
+                {marketRates.eur && (
+                  <div className={`p-4 rounded-2xl border shadow-2xs space-y-3 ${
+                    darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 flex items-center justify-center font-black text-xs border border-blue-100 dark:border-blue-800">
+                          €
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-xs text-slate-900 dark:text-slate-100">يورو أوروبي</h4>
+                          <span className="text-[10px] text-slate-400">EUR / SYP</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="p-3 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">شراء</span>
+                        <span className="text-sm font-black text-blue-600 dark:text-blue-400 block">
+                          {marketRates.eur.buy ? marketRates.eur.buy.toLocaleString('ar-SY') + ' ل.س' : 'غير متوفر'}
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">مبيع</span>
+                        <span className="text-sm font-black text-slate-800 dark:text-slate-200 block">
+                          {marketRates.eur.sell ? marketRates.eur.sell.toLocaleString('ar-SY') + ' ل.س' : 'غير متوفر'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. أسعار الذهب والأونصة */}
+                {(marketRates.gold21 || marketRates.gold18 || marketRates.goldOunce) && (
+                  <div className={`p-4 rounded-2xl border shadow-2xs space-y-3 ${
+                    darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400 flex items-center justify-center font-black text-xs border border-amber-100 dark:border-amber-800">
+                          Au
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-xs text-slate-900 dark:text-slate-100">أسعار الذهب</h4>
+                          <span className="text-[10px] text-slate-400">GOLD / SYP</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="p-2.5 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">عيار 21</span>
+                        <span className="text-xs font-black text-amber-500 block">
+                          {marketRates.gold21?.price ? marketRates.gold21.price.toLocaleString('ar-SY') : '---'}
+                        </span>
+                        <span className="text-[9px] text-slate-400">ل.س/غ</span>
+                      </div>
+                      <div className="p-2.5 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">عيار 18</span>
+                        <span className="text-xs font-black text-amber-500 block">
+                          {marketRates.gold18?.price ? marketRates.gold18.price.toLocaleString('ar-SY') : '---'}
+                        </span>
+                        <span className="text-[9px] text-slate-400">ل.س/غ</span>
+                      </div>
+                      <div className="p-2.5 rounded-xl border text-center space-y-1 bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-750">
+                        <span className="text-[10px] text-slate-400 block">الأونصة</span>
+                        <span className="text-xs font-black text-slate-800 dark:text-white block">
+                          {marketRates.goldOunce?.price ? '$' + marketRates.goldOunce.price.toLocaleString('en-US') : '---'}
+                        </span>
+                        <span className="text-[9px] text-slate-400">دولار</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'my_products' ? (
+          /* ==========================================
+             قسم "منتجاتي": خاص بالبائع لرؤية وإدارة كل ما نشره
+             ========================================== */
+          <div className="flex-1 flex flex-col py-2">
+            {!currentUser ? (
+              <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs text-center space-y-4 my-auto">
+                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto shadow-2xs">
+                  <Package className="w-8 h-8" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">قسم منتجاتي</h3>
+                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed max-w-xs mx-auto">
+                    هذا القسم مخصص لك كبائع لتتمكن من استعراض كافة المنتجات والإعلانات التي قمت بنشرها وإدارتها بسهولة.
+                  </p>
+                </div>
+                <div className="pt-2 max-w-xs mx-auto w-full">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalReason('سجّل الدخول لعرض وإدارة منتجاتك وإعلاناتك في سوق سوريا');
+                      setAuthModalInitialMode('login');
+                      setShowAuthModal(true);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-all shadow-xs cursor-pointer"
+                  >
+                    تسجيل الدخول / إنشاء حساب
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* بطاقة الترويسة لمنتجاتي */}
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-100">
+                      <Package className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-slate-900 text-sm">منتجاتي المنشورة</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                          {myProducts.length} إعلان
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        كافة الإعلانات النشطة على حسابك في سوق سوريا
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateScreen(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>نشر جديد</span>
+                  </button>
+                </div>
+
+                {/* قائمة منتجات البائع */}
+                {myProducts.length === 0 ? (
+                  <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-3">
+                    <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                      <Package className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-slate-800 text-sm">لم تنشر أي إعلانات بعد</h4>
+                      <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
+                        ابدأ الآن بنشر منتجك الأول مع صور وتفاصيل ليصل إلى آلاف المشترين في سوريا فوراً!
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateScreen(true)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>انشر أول منتج لك الآن</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                    {myProducts.map((p) => {
+                      const pImages = parseProductImages(p.image_url);
+                      return (
+                        <div
+                          key={p.id}
+                          className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden transition-all hover:border-slate-300"
+                        >
+                          <div className="p-3.5 flex gap-3">
+                            {/* الصورة المصغرة أو المعاينة */}
+                            {pImages.length > 0 ? (
+                              <div
+                                onClick={() => handleOpenLightbox(pImages, 0, p.title)}
+                                className="w-20 h-20 rounded-xl overflow-hidden bg-slate-100 shrink-0 border border-slate-100 relative cursor-pointer group"
+                              >
+                                <img
+                                  src={pImages[0]}
+                                  alt={p.title}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                />
+                                {pImages.length > 1 && (
+                                  <span className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-black/70 text-white text-[9px] font-bold">
+                                    {pImages.length} صور
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="w-20 h-20 rounded-xl bg-slate-100 text-slate-400 shrink-0 border border-slate-100 flex items-center justify-center">
+                                <ImageIcon className="w-6 h-6" />
+                              </div>
+                            )}
+
+                            {/* تفاصيل المنتج */}
+                            <div className="flex-1 min-w-0 flex flex-col justify-between text-right">
+                              <div>
+                                <div className="flex items-start justify-between gap-1">
+                                  <h4 className="font-bold text-xs text-slate-900 truncate">
+                                    {p.title}
+                                  </h4>
+                                  {p.status === 'pending' ? (
+                                    <span className="shrink-0 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold">
+                                      قيد المراجعة
+                                    </span>
+                                  ) : p.status === 'rejected' ? (
+                                    <span className="shrink-0 px-2 py-0.5 rounded-full bg-red-50 border border-red-200 text-red-700 text-[10px] font-bold">
+                                      مرفوض
+                                    </span>
+                                  ) : (
+                                    <span className="shrink-0 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold">
+                                      معتمد ✓
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-slate-400 block mt-0.5">
+                                  {p.category} • {p.sub_category}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-between mt-2">
+                                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100/80">
+                                  {formatPriceWithCurrency(p.price)}
+                                </span>
+                                <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                                  <Clock className="w-3 h-3" />
+                                  <span>{formatTimeAgo(p.created_at)}</span>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* شريط الإجراءات لإعلان البائع */}
+                          <div className="bg-slate-50/70 border-t border-slate-100 px-3.5 py-2 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              {pImages.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenLightbox(pImages, 0, p.title)}
+                                  className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>معاينة</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleShareProduct(p)}
+                                className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
+                              >
+                                <Share2 className="w-3.5 h-3.5" />
+                                <span>مشاركة</span>
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setProductToDelete(p)}
+                              className="flex items-center gap-1 text-[11px] font-bold text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>حذف</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ==========================================
+             قسم "أنا": مصادقة حقيقية مع سحابة Supabase
+             ========================================== */
+          <div className="flex-1 flex flex-col py-4">
+            {authLoading ? (
+              <div className="flex-1 flex items-center justify-center py-20">
+                <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
+              </div>
+            ) : currentUser ? (
+              /* عندما يكون المستخدم مسجّل دخول فعلياً */
+              <div className="space-y-4">
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs text-center flex flex-col items-center">
+                  <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-2 font-bold text-xl">
+                    {currentUser.user_metadata?.full_name?.charAt(0) || currentUser.email?.charAt(0).toUpperCase()}
+                  </div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    {currentUser.user_metadata?.full_name || currentUser.email}
+                  </h3>
+                  <span className="text-[11px] text-slate-400 mt-0.5">
+                    {currentUser.email}
+                  </span>
+
+                  {currentUser.user_metadata?.national_id && (
+                    <div className="mt-3 pt-3 border-t border-slate-100 w-full grid grid-cols-2 gap-2 text-right text-xs">
+                      <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                        <span className="text-slate-400 text-[10px] block">الرقم الوطني</span>
+                        <span className="font-bold text-slate-700">{currentUser.user_metadata.national_id}</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                        <span className="text-slate-400 text-[10px] block">المحافظة</span>
+                        <span className="font-bold text-slate-700">{currentUser.user_metadata.province || 'غير محدد'}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="mt-4 flex items-center gap-1.5 text-xs text-red-600 hover:text-red-700 font-bold px-3 py-1.5 rounded-lg bg-red-50 border border-red-100 transition-colors cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>تسجيل الخروج</span>
+                  </button>
+                </div>
+
+                {/* إعلانات المستخدم */}
+                <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs">
+                  <h4 className="font-bold text-sm text-slate-900 mb-3 pb-2 border-b border-slate-100">
+                    إعلاناتي المنشورة ({myProducts.length})
+                  </h4>
+                  {myProducts.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-6">
+                      لم تقم بنشر أي إعلانات حتى الآن
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {myProducts.map((p) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-150"
+                        >
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-xs text-slate-800 block">
+                                {p.title}
+                              </span>
+                              {p.status === 'pending' ? (
+                                <span className="px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-[9px] font-bold">
+                                  قيد المراجعة
+                                </span>
+                              ) : p.status === 'rejected' ? (
+                                <span className="px-1.5 py-0.5 rounded-md bg-red-50 border border-red-200 text-red-700 text-[9px] font-bold">
+                                  مرفوض
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[9px] font-bold">
+                                  معتمد
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-slate-400">
+                              {p.category} - {p.sub_category}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setProductToDelete(p)}
+                            className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            title="حذف الإعلان"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* عندما لا يكون المستخدم مسجل الدخول في صفحة أنا */
+              <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs text-center space-y-4 my-auto">
+                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto shadow-2xs">
+                  <User className="w-8 h-8" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">حسابك في سوق سوريا</h3>
+                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed max-w-xs mx-auto">
+                    سجّل الدخول إلى حسابك أو أنشئ حساباً جديداً لنشر الإعلانات وإدارتها وحذفها بكل سهولة وبأمان تام.
+                  </p>
+                </div>
+                <div className="space-y-2 pt-2 max-w-xs mx-auto w-full">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalReason(null);
+                      setAuthModalInitialMode('login');
+                      setShowAuthModal(true);
+                    }}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-xl text-sm transition-all shadow-xs cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>تسجيل الدخول</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalReason(null);
+                      setAuthModalInitialMode('signup');
+                      setShowAuthModal(true);
+                    }}
+                    className="w-full py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl text-sm transition-all border border-slate-200 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>إنشاء حساب جديد</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* بطاقات قنوات وتواصل الدعم الفني المباشر (من السحاب حصراً) */}
+            {Boolean(supportConfig && (supportConfig.whatsapp?.enabled || supportConfig.telegram?.enabled || supportConfig.facebook?.enabled)) && (
+              <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/90'} shadow-2xs space-y-3`}>
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                    <PhoneCall className="w-4 h-4" />
+                  </div>
+                  <div className="flex flex-col text-right">
+                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                      قنوات الدعم الفني والمساعدة
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      تواصل مباشر وسريع مع إدارة سوق سوريا
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {supportConfig?.whatsapp?.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSupport('whatsapp')}
+                      className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center justify-between cursor-pointer active:scale-[0.99]"
+                    >
+                      <div className="flex items-center gap-2">
+                        <MessageCircle className="w-4 h-4" />
+                        <span>{supportConfig.whatsapp.label || 'تواصل واتساب'}</span>
+                      </div>
+                      <span className="text-[10px] bg-emerald-700/70 px-2 py-0.5 rounded-full font-medium">
+                        دردشة فورية
+                      </span>
+                    </button>
+                  )}
+
+                  {supportConfig?.telegram?.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSupport('telegram')}
+                      className="w-full py-2.5 px-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center justify-between cursor-pointer active:scale-[0.99]"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Send className="w-4 h-4" />
+                        <span>{supportConfig.telegram.label || 'دعم تليجرام'}</span>
+                      </div>
+                      <span className="text-[10px] bg-sky-700/70 px-2 py-0.5 rounded-full font-medium">
+                        تليجرام
+                      </span>
+                    </button>
+                  )}
+
+                  {supportConfig?.facebook?.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSupport('facebook')}
+                      className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center justify-between cursor-pointer active:scale-[0.99]"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Facebook className="w-4 h-4" />
+                        <span>{supportConfig.facebook.label || 'صفحتنا على فيسبوك'}</span>
+                      </div>
+                      <span className="text-[10px] bg-blue-700/70 px-2 py-0.5 rounded-full font-medium">
+                        فيسبوك
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </motion.div>
+    </AnimatePresence>
+  </main>
+
+      {/* أسفل الشاشة:
+          - أسفل اليمين: قسم أو أيقونة الرئيسية
+          - في الوسط: أيقونة زائد (+)
+          - في اليسار: قسم أنا
+      */}
+      {/* شريط التنقل السفلي الديناميكي المقروء من السحابة حصراً */}
+      {navItems.length > 0 && (
+        <nav className={`sticky bottom-0 z-30 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} border-t px-2 sm:px-4 py-1.5 shadow-sm transition-colors duration-150`}>
+          <div className="max-w-xl md:max-w-2xl mx-auto w-full flex items-center justify-around relative min-h-[48px]">
+            {navItems
+              .filter((item) => item.is_visible !== false)
+              .sort((a, b) => a.order - b.order)
+              .map((item) => {
+                if (item.is_primary_action || item.key === 'add') {
+                  return (
+                    <div key={item.id || item.key} className="relative flex flex-col items-center justify-center -mt-4">
+                      <motion.button
+                        type="button"
+                        whileHover={{ scale: 1.08 }}
+                        whileTap={{ scale: 0.92 }}
+                        transition={{ type: 'spring', stiffness: 450, damping: 20 }}
+                        onClick={() => {
+                          if (!currentUser) {
+                            setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك');
+                            setAuthModalInitialMode('login');
+                            setShowAuthModal(true);
+                          } else {
+                            setShowPlusMenu(true);
+                          }
+                        }}
+                        className="w-12 h-12 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-md hover:bg-emerald-700 transition-all cursor-pointer ring-4 ring-white dark:ring-slate-900"
+                        aria-label={item.label || 'إضافة إعلان جديد'}
+                        title={item.label || 'إضافة إعلان جديد'}
+                      >
+                        <Plus className="w-6 h-6 stroke-[2.5]" />
+                      </motion.button>
+                      <span className={`text-[10px] mt-0.5 font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {item.label}
+                      </span>
+                    </div>
+                  );
+                }
+
+                const isActive = activeTab === item.key;
+                const badge = item.badgeText || (item.key === 'my_products' && currentUser && myProducts.length > 0 ? myProducts.length : null);
+
+                const renderNavIcon = (iconName?: string, key?: string) => {
+                  const name = (iconName || key || '').toLowerCase();
+                  if (name.includes('home') || name.includes('رئيسي')) return <Home className="w-5 h-5" />;
+                  if (name.includes('coin') || name.includes('rate') || name.includes('عمل') || name.includes('ذهب') || name.includes('trending')) return <Coins className="w-5 h-5" />;
+                  if (name.includes('package') || name.includes('product') || name.includes('منتج')) return <Package className="w-5 h-5" />;
+                  if (name.includes('user') || name.includes('me') || name.includes('أنا') || name.includes('حساب')) return <User className="w-5 h-5" />;
+                  if (name.includes('plus') || name.includes('add') || name.includes('أضف')) return <PlusCircle className="w-5 h-5" />;
+                  if (name.includes('bell') || name.includes('إشعار')) return <Bell className="w-5 h-5" />;
+                  if (name.includes('setting') || name.includes('إعداد')) return <Settings className="w-5 h-5" />;
+                  if (name.includes('search') || name.includes('بحث')) return <Search className="w-5 h-5" />;
+                  return <Home className="w-5 h-5" />;
+                };
+
+                return (
+                  <motion.button
+                    key={item.id || item.key}
+                    type="button"
+                    whileTap={{ scale: 0.92 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                    onClick={() => {
+                      if (item.key === 'add' || item.key === 'create') {
+                        if (!currentUser) {
+                          setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك');
+                          setAuthModalInitialMode('login');
+                          setShowAuthModal(true);
+                        } else {
+                          setShowCreateScreen(true);
+                        }
+                      } else {
+                        setActiveTab(item.key);
+                      }
+                    }}
+                    className={`flex flex-col items-center justify-center gap-0.5 py-1 px-2.5 rounded-xl transition-colors cursor-pointer relative ${
+                      isActive
+                        ? 'text-emerald-600 dark:text-emerald-400 font-bold'
+                        : darkMode
+                        ? 'text-slate-400 hover:text-slate-200 font-medium'
+                        : 'text-slate-500 hover:text-slate-800 font-medium'
+                    }`}
+                  >
+                    <motion.div
+                      animate={{ scale: isActive ? 1.12 : 1 }}
+                      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                      className="relative"
+                    >
+                      {renderNavIcon(item.iconName, item.key)}
+                      {badge && (
+                        <span className="absolute -top-1 -right-2 px-1 min-w-[14px] h-3.5 bg-emerald-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                          {badge}
+                        </span>
+                      )}
+                    </motion.div>
+                    <span className="text-[10px] whitespace-nowrap">{item.label}</span>
+                    {isActive && (
+                      <motion.div
+                        layoutId="activeTabIndicator"
+                        className="absolute -bottom-1 w-5 h-1 rounded-full bg-emerald-600 dark:bg-emerald-400"
+                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                      />
+                    )}
+                  </motion.button>
+                );
+              })}
+          </div>
+        </nav>
+      )}
+
+      {/* منبثقة زر الزائد مع حركة انزلاق وانتقال احترافية */}
+      <AnimatePresence>
+        {showPlusMenu && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-4"
+            onClick={() => setShowPlusMenu(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 30, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 25, scale: 0.95 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+              className={`rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden border flex flex-col p-4 ${
+                darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-100 text-slate-900'
+              }`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-3 mb-2 border-b border-slate-100 dark:border-slate-800">
+                <h3 className="font-bold text-sm">خيارات الإضافة</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowPlusMenu(false)}
+                  className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  aria-label="إغلاق"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.98 }}
+                onClick={() => {
+                  setShowPlusMenu(false);
+                  if (!currentUser) {
+                    setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك في سوق سوريا');
+                    setAuthModalInitialMode('login');
+                    setShowAuthModal(true);
+                  } else {
+                    setShowCreateScreen(true);
+                  }
+                }}
+                className="flex items-center justify-between w-full p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-100 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 transition-all cursor-pointer font-bold text-sm"
+              >
+                <div className="flex items-center gap-2.5">
+                  <PlusCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                  <span>نشر إعلان جديد</span>
+                </div>
+                <ArrowRight className="w-4 h-4 rotate-180 text-emerald-600 dark:text-emerald-400" />
+              </motion.button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* نافذة الإشعارات المتصلة بـ Supabase */}
+      <AnimatePresence>
+        {showNotifications && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4"
+            onClick={() => setShowNotifications(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+              className={`rounded-2xl w-full max-w-sm shadow-xl overflow-hidden border flex flex-col max-h-[80vh] ${
+                darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-100 text-slate-800'
+              }`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={`flex items-center justify-between px-4 py-3.5 border-b ${
+                darkMode ? 'border-slate-800 bg-slate-900/90' : 'border-slate-100 bg-slate-50/70'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <Bell className="w-5 h-5 text-emerald-600" />
+                  <h2 className="font-bold text-base">إشعارات الإدارة</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowNotifications(false)}
+                  className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  aria-label="إغلاق"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-4 overflow-y-auto space-y-3">
+                {notifications.length === 0 ? (
+                  <div className="py-10 text-center text-slate-400 text-xs">
+                    لا توجد إشعارات حالياً
+                  </div>
+                ) : (
+                  notifications.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`p-3.5 rounded-xl border text-right flex flex-col gap-1.5 ${
+                        darkMode ? 'bg-slate-800/60 border-slate-700/60' : 'bg-slate-50 border-slate-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sm text-emerald-700 dark:text-emerald-400">
+                          {item.title}
+                        </span>
+                        {item.created_at && (
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            <span>{new Date(item.created_at).toLocaleDateString('ar-SY')}</span>
+                          </span>
+                        )}
+                      </div>
+                      <p className={`text-xs leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+                        {item.message}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className={`p-3 border-t flex justify-end ${
+                darkMode ? 'border-slate-800 bg-slate-900/60' : 'border-slate-100 bg-slate-50/50'
+              }`}>
+                <button
+                  type="button"
+                  onClick={() => setShowNotifications(false)}
+                  className="px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  إغلاق
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* النافذة العائمة لتسجيل الدخول وإنشاء الحساب (المحافظات ديناميكية من السحاب) */}
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        reasonMessage={authModalReason}
+        initialMode={authModalInitialMode}
+        darkMode={darkMode}
+        botProtectionMode={botProtectionMode}
+        provinces={provincesData}
+        onSuccess={() => {
+          if (authModalReason?.includes('نشر')) {
+            setShowCreateScreen(true);
+          }
+        }}
+      />
+
+      {/* نافذة تكبير وتصفح الصور المنبثقة بحجم الشاشة الكامل */}
+      <ImageLightboxModal
+        isOpen={lightboxOpen}
+        onClose={() => setLightboxOpen(false)}
+        images={lightboxImages}
+        initialIndex={lightboxIndex}
+        title={lightboxTitle}
+      />
+
+      {/* نافذة إعدادات التطبيق (المقترحات ديناميكية من السحاب) */}
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
+        sortOrder={sortOrder}
+        onChangeSortOrder={handleUpdateSortOrder}
+        postFontScale={postFontScale}
+        onChangePostFontScale={handleUpdatePostFontScale}
+        proposals={settingsProposals}
+      />
+
+      {/* تأكيد أمان إضافي كجزء أساسي من التطبيق قبل حذف أي إعلان */}
+      {productToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => {
+            if (!isDeletingProduct) setProductToDelete(null);
+          }}
+        >
+          <div
+            className={`w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden border p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150 text-right ${
+              darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-100 text-slate-900'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 dark:bg-rose-950/70 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0 border border-rose-200 dark:border-rose-900/60">
+                <ShieldAlert className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  تأكيد أمان حذف الإعلان
+                </h3>
+                <span className="text-[11px] text-slate-400 block mt-0.5">
+                  إجراء أمني إلزامي لمنع الحذف بالخطأ
+                </span>
+              </div>
+            </div>
+
+            <div className={`p-3 rounded-xl border text-xs leading-relaxed space-y-1.5 ${
+              darkMode ? 'bg-slate-800/60 border-slate-700/80' : 'bg-slate-50 border-slate-200/80'
+            }`}>
+              <div className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 truncate">
+                <span>الإعلان:</span>
+                <span className="text-emerald-600 dark:text-emerald-400 font-bold truncate">
+                  "{productToDelete.title}"
+                </span>
+              </div>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px]">
+                هل أنت متأكد تماماً من حذف هذا الإعلان نهائياً من حسابك في سوق سوريا؟ هذا الإجراء دائم ولا يمكن التراجع عنه أو استرجاع الصور بعد إتمام الحذف.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingProduct}
+                onClick={handleConfirmDeleteProduct}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingProduct ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>جاري الحذف...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>تأكيد الحذف نهائياً</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingProduct}
+                onClick={() => setProductToDelete(null)}
+                className={`py-2.5 px-4 rounded-xl font-bold text-xs transition-colors cursor-pointer border ${
+                  darkMode
+                    ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'border-slate-200 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* شاشة وضع الصيانة العام إذا تم تفعيله من لوحة الإدارة */}
+      {maintenanceConfig.enabled && (
+        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center text-white select-text">
+          <div className="w-20 h-20 rounded-3xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mb-5 shadow-lg shadow-amber-500/10 animate-bounce">
+            <Wrench className="w-10 h-10" />
+          </div>
+
+          <h2 className="text-xl font-black text-white mb-2">
+            {maintenanceConfig.title || 'سوق سوريا قيد الصيانة والتطوير'}
+          </h2>
+
+          <p className="text-sm text-slate-300 max-w-sm mb-4 leading-relaxed">
+            {maintenanceConfig.message ||
+              'نقوم حالياً بإجراء تحديثات وتحسينات على الخوادم لخدمتكم بشكل أفضل، سنعود قريباً جداً. شكراً لتفهمكم.'}
+          </p>
+
+          {maintenanceConfig.estimatedReturnTime && (
+            <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-slate-900 border border-slate-800 text-xs text-amber-300 font-bold mb-6">
+              <Clock className="w-3.5 h-3.5" />
+              <span>الوقت المقدر: {maintenanceConfig.estimatedReturnTime}</span>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2.5 w-full max-w-xs">
+            <button
+              type="button"
+              onClick={() => fetchCloudConfig()}
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>إعادة فحص الاتصال الآن</span>
+            </button>
+
+            {supportConfig?.whatsapp?.enabled && (
+              <button
+                type="button"
+                onClick={() => handleOpenSupport('whatsapp')}
+                className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{supportConfig.whatsapp.label || 'تواصل مع الإدارة عبر واتساب'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* تنبيه منبثق عند نسخ الرابط أو المشاركة */}
+      {toastMessage && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-4 py-2.5 rounded-xl shadow-lg text-xs font-semibold flex items-center gap-2 border border-slate-700 animate-in fade-in slide-in-from-bottom-2 max-w-sm text-center">
+          <span>{toastMessage}</span>
+        </div>
+      )}
+    </div>
+  );
+}
