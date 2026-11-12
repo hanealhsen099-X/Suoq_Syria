@@ -39,6 +39,7 @@ import {
   PhoneCall,
   Send,
   Facebook,
+  ShieldCheck,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { uploadImageToSupabase, compressImage } from './lib/storage';
@@ -49,6 +50,7 @@ import {
   formatPriceWithCurrency,
   formatTimeAgo,
   formatWhatsappUrl,
+  formatDirectCallUrl,
   type ProductItem,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
@@ -196,6 +198,24 @@ export default function App() {
   const [botProtectionMode, setBotProtectionMode] = useState<string>('none');
 
   // دالة فتح قنوات الدعم مع إخفاء الرقم الفعلي والتحويل التلقائي
+  const handleWidgetClick = (widget: CustomCloudWidget) => {
+    if (!widget.actionValue) return;
+    if (widget.actionType === 'url') {
+      let url = widget.actionValue.trim();
+      if (!url.startsWith('http')) url = 'https://' + url;
+      window.open(url, '_blank');
+    } else if (widget.actionType === 'whatsapp') {
+      window.open(formatWhatsappUrl(widget.actionValue), '_blank');
+    } else if (widget.actionType === 'call') {
+      window.open(formatDirectCallUrl(widget.actionValue), '_self');
+    } else if (widget.actionType === 'tab') {
+      setActiveTab(widget.actionValue);
+    } else if (widget.actionType === 'alert') {
+      setToastMessage(widget.actionValue);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  };
+
   const handleOpenSupport = (channel: 'whatsapp' | 'telegram' | 'facebook') => {
     if (!supportConfig) return;
     if (channel === 'whatsapp' && supportConfig.whatsapp?.value) {
@@ -224,19 +244,7 @@ export default function App() {
     supabase
       .from('products')
       .select('title, description, created_at')
-      .in('title', [
-        '__APP_CONFIG_CATEGORIES__',
-        '__APP_CONFIG_PROVINCES__',
-        '__APP_CONFIG_RATES__',
-        '__APP_CONFIG_NOTICE__',
-        '__APP_CONFIG_MAINTENANCE__',
-        '__APP_CONFIG_SUPPORT__',
-        '__APP_CONFIG_BROADCAST__',
-        '__APP_CONFIG_FEATURED__',
-        '__APP_CONFIG_NAV_ITEMS__',
-        '__APP_CONFIG_BOT_PROTECTION__',
-        '__APP_CONFIG_SETTINGS_PROPOSALS__',
-      ])
+      .or('title.like.__APP_CONFIG_%,title.eq.APP_CONFIG_FIELDS')
       .order('created_at', { ascending: false })
       .then(({ data }) => {
         if (data && data.length > 0) {
@@ -282,6 +290,14 @@ export default function App() {
                   setMarketRates(cloudRates);
                 }
               }
+              if ((row.title === '__APP_CONFIG_CUSTOM_UI__' || row.title === '__APP_CONFIG_WIDGETS__' || row.title === 'APP_CONFIG_CUSTOM_UI') && row.description) {
+                try {
+                  const cloudWidgets = JSON.parse(row.description);
+                  if (Array.isArray(cloudWidgets)) {
+                    setCustomWidgets(cloudWidgets);
+                  }
+                } catch {}
+              }
               if (row.title === '__APP_CONFIG_NOTICE__' && row.description) {
                 const cloudNotice = JSON.parse(row.description);
                 if (cloudNotice) {
@@ -325,6 +341,49 @@ export default function App() {
                 if (Array.isArray(cloudNav) && cloudNav.length > 0) {
                   setNavItems(cloudNav);
                 }
+              }
+              if ((row.title === '__APP_CONFIG_FIELDS__' || row.title === 'APP_CONFIG_FIELDS') && row.description) {
+                try {
+                  const cloudFields = JSON.parse(row.description);
+                  if (cloudFields) {
+                    setFieldsConfig(cloudFields);
+                  }
+                } catch {}
+              }
+              if (row.title === '__APP_CONFIG_VERIFIED_USERS__' && row.description) {
+                try {
+                  const vIds = JSON.parse(row.description);
+                  if (Array.isArray(vIds)) {
+                    setVerifiedUserIds(vIds);
+                  }
+                } catch {}
+              }
+              if (row.title === '__APP_CONFIG_PRIVACY_POLICY__' && row.description) {
+                try {
+                  const pol = JSON.parse(row.description);
+                  if (pol && pol.text) {
+                    setPrivacyPolicyConfig(pol);
+                  }
+                } catch {}
+              }
+              if ((row.title === '__APP_CONFIG_CUSTOM_UI__' || row.title === '__APP_CONFIG_WIDGETS__' || row.title === 'APP_CONFIG_CUSTOM_UI') && row.description) {
+                try {
+                  const cloudWidgets = JSON.parse(row.description);
+                  if (Array.isArray(cloudWidgets)) {
+                    setCustomWidgets(cloudWidgets);
+                  }
+                } catch {}
+              }
+              if (row.title === '__APP_CONFIG_NOTICE__' && row.description) {
+                try {
+                  const notObj = JSON.parse(row.description);
+                  if (notObj && notObj.privacyPolicyText) {
+                    setPrivacyPolicyConfig((prev) => ({
+                      text: notObj.privacyPolicyText,
+                      version: notObj.privacyPolicyVersion || prev.version,
+                    }));
+                  }
+                } catch {}
               }
               if (row.title === '__APP_CONFIG_BOT_PROTECTION__' && row.description) {
                 const cloudBot = JSON.parse(row.description);
@@ -444,6 +503,85 @@ export default function App() {
 
   // المستخدم والمصادقة مع Supabase
   const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
+  // قائمة معرفات المستخدمين الموثقين من الإدارة
+  const [verifiedUserIds, setVerifiedUserIds] = useState<string[]>([]);
+
+  // إعدادات الحقول الديناميكية القادمة من الإدارة
+  interface CustomCloudWidget {
+    id: string;
+    type?: 'button' | 'badge' | 'floating_button' | 'banner' | 'text';
+    label: string;
+    icon?: string;
+    position?: 'top_right' | 'top_left' | 'bottom_right' | 'bottom_left' | 'top_banner';
+    actionType?: 'url' | 'whatsapp' | 'call' | 'tab' | 'alert' | 'modal';
+    actionValue?: string;
+    bgColor?: string;
+    textColor?: string;
+    badge?: string;
+    visible?: boolean;
+  }
+  const [customWidgets, setCustomWidgets] = useState<CustomCloudWidget[]>([]);
+  const [customProductValues, setCustomProductValues] = useState<Record<string, string>>({});
+  const [fieldsConfig, setFieldsConfig] = useState<{
+    signupFields?: any[];
+    postProductFields?: any[];
+  } | null>(null);
+
+  // سياسة الخصوصية الديناميكية المعتمدة من الإدارة
+  const [privacyPolicyConfig, setPrivacyPolicyConfig] = useState<{
+    text: string;
+    version: string;
+  }>({
+    text: "شروط الاستخدام وسياسة الخصوصية لتطبيق سوق سوريا:\n1. الالتزام بالمصداقية في وصف المنتجات والسلع والأسعار بالليرة السورية أو العملات المعتمدة.\n2. يمنع منعاً باتاً ترويج أي سلع محظورة قانونياً أو أسلحة أو معاملات غير مشروعة داخل الجمهورية العربية السورية.\n3. توثيق الحساب بالرقم الوطني السوري يمنح صاحب الإعلان شارة التوثيق الذهبية وثقة عالية لدى المشترين.\n4. يحق لإدارة سوق سوريا إيقاف أو حظر أي حساب ينتهك شروط النشر أو ترد بحقه بلاغات احتيال لحماية المجتمع.",
+    version: "1.0",
+  });
+
+  // قيم الحقول المخصصة في واجهة نشر الإعلان
+  const [customProductFieldValues, setCustomProductFieldValues] = useState<Record<string, any>>({});
+
+  const postFieldsList = fieldsConfig?.postProductFields;
+  const isPostFieldVisible = (fieldId: string, def = true) => {
+    if (!postFieldsList || postFieldsList.length === 0) return def;
+    const f = postFieldsList.find((item) => item.id === fieldId || item.name === fieldId);
+    return f ? f.visible !== false : def;
+  };
+  const isPostFieldRequired = (fieldId: string, def = true) => {
+    if (!postFieldsList || postFieldsList.length === 0) return def;
+    const f = postFieldsList.find((item) => item.id === fieldId || item.name === fieldId);
+    return f ? Boolean(f.required) : def;
+  };
+  const customPostFields = (postFieldsList || []).filter(
+    (f) =>
+      f.isCustom &&
+      f.visible !== false &&
+      ![
+        "title",
+        "category",
+        "sub_category",
+        "price",
+        "is_negotiable",
+        "whatsapp",
+        "province",
+        "location",
+        "images",
+        "description",
+      ].includes(f.name)
+  );
+
+
+  const [currentUserProfile, setCurrentUserProfile] = useState<{
+    id: string;
+    full_name?: string | null;
+    father_name?: string | null;
+    national_id?: string | null;
+    province?: string | null;
+    address?: string | null;
+    is_verified?: boolean;
+    is_banned?: boolean;
+    banned_until?: string | null;
+    ban_reason?: string | null;
+  } | null>(null);
+  const [showTermsModal, setShowTermsModal] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
   // حالة النافذة العائمة للمصادقة (تسجيل الدخول / إنشاء حساب)
@@ -702,30 +840,44 @@ export default function App() {
     e.preventDefault();
     setPublishError(null);
 
-    // التحقق من الحقول الإلزامية
-    if (!productName.trim()) {
-      setPublishError('يرجى كتابة اسم المنتج');
+    // التحقق الديناميكي الذكي من الحقول الإلزامية حسب إعدادات السحابة
+    if (isPostFieldVisible('title', true) && isPostFieldRequired('title', true) && !productName.trim()) {
+      setPublishError('يرجى كتابة اسم المنتج أو عنوان الإعلان');
       return;
     }
-    if (!productCategory) {
+    if (isPostFieldVisible('category', true) && isPostFieldRequired('category', true) && !productCategory) {
       setPublishError('يرجى تحديد القسم الرئيسي');
       return;
     }
-    if (!productSubCategory) {
+    if (isPostFieldVisible('category', true) && isPostFieldRequired('category', true) && !productSubCategory) {
       setPublishError('يرجى اختيار القسم الفرعي (إلزامي)');
       return;
     }
-    if (!selectedProvince) {
+    if (isPostFieldVisible('province', true) && isPostFieldRequired('province', true) && !selectedProvince) {
       setPublishError('يرجى اختيار المحافظة');
       return;
     }
-    if (!productAddress.trim()) {
-      setPublishError('يرجى كتابة العنوان والمنطقة');
+    if (isPostFieldVisible('location', true) && isPostFieldRequired('location', true) && !productAddress.trim()) {
+      setPublishError('يرجى كتابة العنوان والمنطقة بالتفصيل');
       return;
     }
-    if (!productWhatsapp.trim()) {
+    if (isPostFieldVisible('whatsapp', true) && isPostFieldRequired('whatsapp', true) && !productWhatsapp.trim()) {
       setPublishError('يرجى إدخال رقم الواتساب للتواصل (إلزامي)');
       return;
+    }
+    if (isPostFieldVisible('price', true) && isPostFieldRequired('price', false) && !productPrice.trim() && !productIsNegotiable) {
+      setPublishError('يرجى إدخال السعر أو تفعيل خيار السعر قابل للتفاوض');
+      return;
+    }
+    if (isPostFieldVisible('images', true) && isPostFieldRequired('images', false) && productImages.length === 0) {
+      setPublishError('يرجى إرفاق صورة واحدة على الأقل للإعلان');
+      return;
+    }
+    for (const cf of customPostFields) {
+      if (cf.required && !customProductValues[cf.name]?.trim()) {
+        setPublishError(`يرجى إدخال الحقل الإلزامي: ${cf.label}`);
+        return;
+      }
     }
 
     setIsPublishing(true);
@@ -1099,317 +1251,383 @@ export default function App() {
               <p className="text-xs text-slate-500">جاري توجيهك إلى صفحة الإعلانات...</p>
             </div>
           ) : (
-            <form onSubmit={handlePublishSubmit} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-4">
-              
+            <form onSubmit={handlePublishSubmit} className="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
               {publishError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600 flex items-center gap-2">
+                <div className="p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-600 dark:text-red-400 flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{publishError}</span>
                 </div>
               )}
 
-              {/* 1. صور المنتج أو الإعلان (حتى 3 صور كحد أقصى) */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-slate-700">
-                    1. صور المنتج أو الإعلان (حتى 3 صور كحد أقصى)
-                  </label>
-                  <span className="text-[11px] text-slate-500 font-medium">
-                    {productImages.length} من 3 صور
-                  </span>
-                </div>
+              {/* 1. صور المنتج أو الإعلان */}
+              {isPostFieldVisible('images', true) && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
+                      صور المنتج أو الإعلان (حتى 3 صور كحد أقصى) {isPostFieldRequired('images', false) && <span className="text-rose-500">*</span>}
+                    </label>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {productImages.length} من 3 صور
+                    </span>
+                  </div>
 
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleMultiImageChange}
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  id="product-images-upload"
-                />
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleMultiImageChange}
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    id="product-images-upload"
+                  />
 
-                {productImages.length > 0 ? (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-3 gap-2">
-                      {productImages.map((img, idx) => (
-                        <div
-                          key={idx}
-                          className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-50 aspect-square group shadow-2xs"
-                        >
-                          <img
-                            src={img.preview}
-                            alt={`صورة ${idx + 1}`}
-                            className="w-full h-full object-cover"
-                          />
-                          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-bold">
-                            صورة {idx + 1}
-                          </span>
+                  {productImages.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-3 gap-2">
+                        {productImages.map((img, idx) => (
+                          <div
+                            key={idx}
+                            className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 aspect-square group shadow-2xs"
+                          >
+                            <img
+                              src={img.preview}
+                              alt={`صورة ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                            />
+                            <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/60 text-white text-[10px] font-bold">
+                              صورة {idx + 1}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeImageAtIndex(idx)}
+                              className="absolute bottom-1.5 left-1.5 p-1 rounded-lg bg-red-600/90 text-white hover:bg-red-700 transition-colors shadow-xs cursor-pointer"
+                              title="حذف هذه الصورة"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+
+                        {productImages.length < 3 && (
                           <button
                             type="button"
-                            onClick={() => removeImageAtIndex(idx)}
-                            className="absolute bottom-1.5 left-1.5 p-1 rounded-lg bg-red-600/90 text-white hover:bg-red-700 transition-colors shadow-xs cursor-pointer"
-                            title="حذف هذه الصورة"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-emerald-500 flex flex-col items-center justify-center gap-1 bg-slate-50/50 dark:bg-slate-800/50 hover:bg-emerald-50/20 text-slate-500 hover:text-emerald-700 transition-all aspect-square cursor-pointer p-2"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Plus className="w-5 h-5" />
+                            <span className="text-[10px] font-bold">إضافة صورة</span>
+                            <span className="text-[9px] text-slate-400">({3 - productImages.length} متبقية)</span>
                           </button>
-                        </div>
-                      ))}
+                        )}
+                      </div>
 
-                      {productImages.length < 3 && (
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="rounded-xl border-2 border-dashed border-slate-300 hover:border-emerald-500 flex flex-col items-center justify-center gap-1 bg-slate-50/50 hover:bg-emerald-50/20 text-slate-500 hover:text-emerald-700 transition-all aspect-square cursor-pointer p-2"
-                        >
-                          <Plus className="w-5 h-5" />
-                          <span className="text-[10px] font-bold">إضافة صورة</span>
-                          <span className="text-[9px] text-slate-400">({3 - productImages.length} متبقية)</span>
-                        </button>
-                      )}
-                    </div>
-
-                    <p className="text-[11px] text-slate-400 leading-normal">
-                      * تظهر الصور للمشاهدين مجمّعة في بطاقة واحدة كمنشورات التواصل، مع إمكانية النقر والتكبير.
-                    </p>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-5 flex flex-col items-center justify-center gap-2 bg-slate-50/50 hover:bg-emerald-50/20 transition-all cursor-pointer text-slate-500 hover:text-emerald-700"
-                  >
-                    <div className="w-10 h-10 rounded-full bg-white shadow-xs flex items-center justify-center text-slate-400">
-                      <ImageIcon className="w-5 h-5" />
-                    </div>
-                    <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى 3 صور)</span>
-                    <span className="text-[10px] text-slate-400">PNG, JPG (يتم ضغطها تلقائياً قبل الرفع)</span>
-                  </button>
-                )}
-              </div>
-
-              {/* 2. اسم المنتج */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  2. اسم المنتج *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={productName}
-                  onChange={(e) => setProductName(e.target.value)}
-                  placeholder="أدخل اسم المنتج أو الإعلان..."
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                />
-              </div>
-
-              {/* اختيار القسم الرئيسي والفرعي في شبكة متجاوبة */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    القسم الرئيسي *
-                  </label>
-                  {categories.length === 0 ? (
-                    <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 dark:text-slate-400 font-medium text-right">
-                      لا توجد أقسام
+                      <p className="text-[11px] text-slate-400 leading-normal">
+                        * تظهر الصور للمشاهدين مجمّعة في بطاقة واحدة كمنشورات التواصل، مع إمكانية النقر والتكبير.
+                      </p>
                     </div>
                   ) : (
-                    <select
-                      required
-                      value={productCategory}
-                      onChange={(e) => {
-                        setProductCategory(e.target.value);
-                        setProductSubCategory('');
-                      }}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-emerald-500 rounded-xl p-5 flex flex-col items-center justify-center gap-2 bg-slate-50/50 dark:bg-slate-800/50 hover:bg-emerald-50/20 transition-all cursor-pointer text-slate-500 hover:text-emerald-700"
                     >
-                      <option value="" disabled>-- اختر القسم --</option>
-                      {categories.map((cat) => (
-                        <option key={cat.id || cat.name} value={cat.name}>
-                          {cat.name}
-                        </option>
-                      ))}
-                    </select>
+                      <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 shadow-xs flex items-center justify-center text-slate-400">
+                        <ImageIcon className="w-5 h-5" />
+                      </div>
+                      <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى 3 صور)</span>
+                      <span className="text-[10px] text-slate-400">PNG, JPG (يتم ضغطها تلقائياً قبل الرفع)</span>
+                    </button>
                   )}
                 </div>
+              )}
 
+              {/* 2. اسم المنتج أو عنوان الإعلان */}
+              {isPostFieldVisible('title', true) && (
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    القسم الفرعي *
+                    اسم المنتج أو الإعلان {isPostFieldRequired('title', true) && <span className="text-rose-500">*</span>}
                   </label>
-                  {activeCreateCategoryData?.subCategories && activeCreateCategoryData.subCategories.length > 0 ? (
-                    <select
-                      required
-                      value={productSubCategory}
-                      onChange={(e) => setProductSubCategory(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
-                    >
-                      <option value="">-- اختر القسم الفرعي --</option>
-                      {activeCreateCategoryData.subCategories.map((sub) => (
-                        <option key={sub} value={sub}>
-                          {sub}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      required
-                      value={productSubCategory}
-                      onChange={(e) => setProductSubCategory(e.target.value)}
-                      placeholder="اكتب القسم الفرعي..."
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
-                    />
-                  )}
+                  <input
+                    type="text"
+                    required={isPostFieldRequired('title', true)}
+                    value={productName}
+                    onChange={(e) => setProductName(e.target.value)}
+                    placeholder="أدخل اسم المنتج أو الإعلان..."
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  />
                 </div>
-              </div>
+              )}
 
-              {/* المحافظة والعنوان في شبكة متجاوبة */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    المحافظة *
-                  </label>
-                  <div className="relative">
-                    {provincesData.length > 0 ? (
+              {/* اختيار القسم الرئيسي والفرعي */}
+              {isPostFieldVisible('category', true) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                      القسم الرئيسي {isPostFieldRequired('category', true) && <span className="text-rose-500">*</span>}
+                    </label>
+                    {categories.length === 0 ? (
+                      <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 dark:text-slate-400 font-medium text-right">
+                        لا توجد أقسام
+                      </div>
+                    ) : (
                       <select
-                        required
-                        value={selectedProvince}
-                        onChange={(e) => setSelectedProvince(e.target.value)}
+                        required={isPostFieldRequired('category', true)}
+                        value={productCategory}
+                        onChange={(e) => {
+                          setProductCategory(e.target.value);
+                          setProductSubCategory('');
+                        }}
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
                       >
-                        <option value="" disabled>
-                          اختر المحافظة
-                        </option>
-                        {provincesData.map((prov) => (
-                          <option key={prov} value={prov}>
-                            {prov}
+                        <option value="" disabled>-- اختر القسم --</option>
+                        {categories.map((cat) => (
+                          <option key={cat.id || cat.name} value={cat.name}>
+                            {cat.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                      القسم الفرعي {isPostFieldRequired('category', true) && <span className="text-rose-500">*</span>}
+                    </label>
+                    {activeCreateCategoryData?.subCategories && activeCreateCategoryData.subCategories.length > 0 ? (
+                      <select
+                        required={isPostFieldRequired('category', true)}
+                        value={productSubCategory}
+                        onChange={(e) => setProductSubCategory(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                      >
+                        <option value="">-- اختر القسم الفرعي --</option>
+                        {activeCreateCategoryData.subCategories.map((sub) => (
+                          <option key={sub} value={sub}>
+                            {sub}
                           </option>
                         ))}
                       </select>
                     ) : (
                       <input
                         type="text"
-                        required
-                        value={selectedProvince}
-                        onChange={(e) => setSelectedProvince(e.target.value)}
-                        placeholder="اكتب اسم المحافظة أو المدينة..."
+                        required={isPostFieldRequired('category', true)}
+                        value={productSubCategory}
+                        onChange={(e) => setProductSubCategory(e.target.value)}
+                        placeholder="اكتب القسم الفرعي..."
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
                       />
                     )}
-                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                      <MapPin className="w-4 h-4" />
+                  </div>
+                </div>
+              )}
+
+              {/* المحافظة والعنوان */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {isPostFieldVisible('province', true) && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                      المحافظة {isPostFieldRequired('province', true) && <span className="text-rose-500">*</span>}
+                    </label>
+                    <div className="relative">
+                      {provincesData.length > 0 ? (
+                        <select
+                          required={isPostFieldRequired('province', true)}
+                          value={selectedProvince}
+                          onChange={(e) => setSelectedProvince(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer appearance-none text-slate-800 dark:text-slate-100"
+                        >
+                          <option value="" disabled>اختر المحافظة</option>
+                          {provincesData.map((prov) => (
+                            <option key={prov} value={prov}>
+                              {prov}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          required={isPostFieldRequired('province', true)}
+                          value={selectedProvince}
+                          onChange={(e) => setSelectedProvince(e.target.value)}
+                          placeholder="اكتب اسم المحافظة أو المدينة..."
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
+                        />
+                      )}
+                      <div className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <MapPin className="w-4 h-4" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isPostFieldVisible('location', true) && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                      العنوان والمنطقة {isPostFieldRequired('location', true) && <span className="text-rose-500">*</span>}
+                    </label>
+                    <input
+                      type="text"
+                      required={isPostFieldRequired('location', true)}
+                      value={productAddress}
+                      onChange={(e) => setProductAddress(e.target.value)}
+                      placeholder="مثال: دمشق - المزة... إلخ"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* رقم الواتساب للتواصل */}
+              {isPostFieldVisible('whatsapp', true) && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    رقم الواتساب للتواصل {isPostFieldRequired('whatsapp', true) && <span className="text-rose-500">* (إلزامي)</span>}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="tel"
+                      required={isPostFieldRequired('whatsapp', true)}
+                      dir="ltr"
+                      value={productWhatsapp}
+                      onChange={(e) => setProductWhatsapp(e.target.value)}
+                      placeholder="مثال: 0912345678 أو 9639..."
+                      className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-right"
+                    />
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-600">
+                      <MessageCircle className="w-4 h-4" />
                     </div>
                   </div>
                 </div>
+              )}
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    العنوان والمنطقة *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={productAddress}
-                    onChange={(e) => setProductAddress(e.target.value)}
-                    placeholder="مثال: دمشق - المزة... إلخ"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-slate-800 dark:text-slate-100"
-                  />
+              {/* السعر والعملة وقابلية التفاوض */}
+              {(isPostFieldVisible('price', true) || isPostFieldVisible('is_negotiable', true)) && (
+                <div className="space-y-2">
+                  {isPostFieldVisible('price', true) && (
+                    <>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
+                        السعر والعملة {isPostFieldRequired('price', false) && <span className="text-rose-500">*</span>}
+                      </label>
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            required={isPostFieldRequired('price', false)}
+                            value={productPrice}
+                            onChange={(e) => setProductPrice(e.target.value)}
+                            placeholder="أدخل المبلغ..."
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                          />
+                        </div>
+                        <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setProductCurrency('SYP')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              productCurrency === 'SYP'
+                                ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                            }`}
+                          >
+                            ل.س (سوري)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setProductCurrency('USD')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              productCurrency === 'USD'
+                                ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                            }`}
+                          >
+                            $ (دولار)
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {isPostFieldVisible('is_negotiable', true) && (
+                    <label className="flex items-center gap-2 cursor-pointer pt-0.5 select-none">
+                      <input
+                        type="checkbox"
+                        checked={productIsNegotiable}
+                        onChange={(e) => setProductIsNegotiable(e.target.checked)}
+                        className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                      />
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        السعر قابل للتفاوض والمفاصلة
+                      </span>
+                    </label>
+                  )}
                 </div>
-              </div>
-
-              {/* 5. رقم الواتساب للتواصل (إلزامي قبل النشر كما طلبت) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  5. رقم الواتساب للتواصل * (إلزامي)
-                </label>
-                <div className="relative">
-                  <input
-                    type="tel"
-                    required
-                    dir="ltr"
-                    value={productWhatsapp}
-                    onChange={(e) => setProductWhatsapp(e.target.value)}
-                    placeholder="مثال: 0912345678 أو 9639..."
-                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-right"
-                  />
-                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-600">
-                    <MessageCircle className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-
-              {/* 6. السعر والعملة وقابلية التفاوض */}
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-slate-700">
-                  6. السعر والعملة (اختياري)
-                </label>
-
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <input
-                      type="text"
-                      value={productPrice}
-                      onChange={(e) => setProductPrice(e.target.value)}
-                      placeholder="أدخل المبلغ..."
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    />
-                  </div>
-
-                  {/* اختيار العملة: ليرة سورية أو دولار */}
-                  <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setProductCurrency('SYP')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        productCurrency === 'SYP'
-                          ? 'bg-white text-emerald-700 shadow-2xs'
-                          : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      ل.س (سوري)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProductCurrency('USD')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        productCurrency === 'USD'
-                          ? 'bg-white text-emerald-700 shadow-2xs'
-                          : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      $ (دولار)
-                    </button>
-                  </div>
-                </div>
-
-                {/* خيار قابل للتفاوض */}
-                <label className="flex items-center gap-2 cursor-pointer pt-0.5 select-none">
-                  <input
-                    type="checkbox"
-                    checked={productIsNegotiable}
-                    onChange={(e) => setProductIsNegotiable(e.target.checked)}
-                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
-                  />
-                  <span className="text-xs font-medium text-slate-700">
-                    السعر قابل للتفاوض والمفاصلة
-                  </span>
-                </label>
-              </div>
+              )}
 
               {/* تفاصيل إضافية */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  تفاصيل إضافية عن المنتج (اختياري)
-                </label>
-                <textarea
-                  rows={3}
-                  value={productDescription}
-                  onChange={(e) => setProductDescription(e.target.value)}
-                  placeholder="أدخل أي مواصفات أو تفاصيل للمشتري..."
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm resize-none"
-                />
-              </div>
+              {isPostFieldVisible('description', true) && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                    تفاصيل إضافية عن المنتج {isPostFieldRequired('description', false) && <span className="text-rose-500">*</span>}
+                  </label>
+                  <textarea
+                    rows={3}
+                    required={isPostFieldRequired('description', false)}
+                    value={productDescription}
+                    onChange={(e) => setProductDescription(e.target.value)}
+                    placeholder="أدخل أي مواصفات أو تفاصيل للمشتري..."
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm resize-none"
+                  />
+                </div>
+              )}
+
+              {/* الحقول المخصصة الإضافية التي يحددها المشرف من لوحة الإدارة */}
+              {customPostFields && customPostFields.length > 0 && (
+                <div className="space-y-3.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <h4 className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                    معلومات وحقول إضافية
+                  </h4>
+                  {customPostFields.map((cf) => (
+                    <div key={cf.id || cf.name}>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
+                        {cf.label} {cf.required && <span className="text-rose-500">*</span>}
+                      </label>
+                      {cf.type === 'textarea' ? (
+                        <textarea
+                          rows={2}
+                          required={cf.required}
+                          value={customProductValues[cf.name] || ''}
+                          onChange={(e) => setCustomProductValues((prev) => ({ ...prev, [cf.name]: e.target.value }))}
+                          placeholder={cf.placeholder || `أدخل ${cf.label}...`}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm resize-none"
+                        />
+                      ) : cf.type === 'select' && cf.options && cf.options.length > 0 ? (
+                        <select
+                          required={cf.required}
+                          value={customProductValues[cf.name] || ''}
+                          onChange={(e) => setCustomProductValues((prev) => ({ ...prev, [cf.name]: e.target.value }))}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm cursor-pointer"
+                        >
+                          <option value="">-- اختر {cf.label} --</option>
+                          {cf.options.map((opt: string) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          required={cf.required}
+                          value={customProductValues[cf.name] || ''}
+                          onChange={(e) => setCustomProductValues((prev) => ({ ...prev, [cf.name]: e.target.value }))}
+                          placeholder={cf.placeholder || `أدخل ${cf.label}...`}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* زر النشر الفعلي مع مؤشر التحميل */}
               <div className="pt-2">
@@ -1421,10 +1639,13 @@ export default function App() {
                   {isPublishing ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{publishStep || 'جارٍ نشر الإعلان...'}</span>
+                      <span>{publishStep || 'جارٍ النشر...'}</span>
                     </>
                   ) : (
-                    <span>نشر الإعلان الآن</span>
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>نشر الإعلان الآن</span>
+                    </>
                   )}
                 </button>
               </div>
@@ -2629,7 +2850,8 @@ export default function App() {
         initialMode={authModalInitialMode}
         darkMode={darkMode}
         botProtectionMode={botProtectionMode}
-        provinces={provincesData}
+        provincesData={provincesData}
+        fieldsConfig={fieldsConfig}
         onSuccess={() => {
           if (authModalReason?.includes('نشر')) {
             setShowCreateScreen(true);
@@ -2786,6 +3008,65 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* الأزرار والعناصر العائمة القادمة من السحابة ديناميكياً */}
+      {customWidgets.filter((w) => w.visible !== false).map((widget) => {
+        const isBottomLeft = widget.position === 'bottom_left';
+        const isBottomRight = widget.position === 'bottom_right';
+        const isTopLeft = widget.position === 'top_left';
+        const isTopRight = widget.position === 'top_right';
+        const isTopBanner = widget.position === 'top_banner';
+
+        if (isTopBanner) {
+          return (
+            <div
+              key={widget.id}
+              onClick={() => handleWidgetClick(widget)}
+              style={{ backgroundColor: widget.bgColor || '#059669', color: widget.textColor || '#ffffff' }}
+              className="w-full py-2 px-4 text-center text-xs font-bold shadow-xs cursor-pointer flex items-center justify-center gap-2 select-none"
+            >
+              <span>{widget.label}</span>
+              {widget.badge && (
+                <span className="px-1.5 py-0.5 rounded-full bg-white/20 text-[10px]">
+                  {widget.badge}
+                </span>
+              )}
+            </div>
+          );
+        }
+
+        const posClass = isBottomLeft
+          ? 'bottom-20 left-4'
+          : isBottomRight
+          ? 'bottom-20 right-4'
+          : isTopLeft
+          ? 'top-16 left-4'
+          : 'top-16 right-4';
+
+        return (
+          <motion.button
+            key={widget.id}
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            type="button"
+            onClick={() => handleWidgetClick(widget)}
+            style={{
+              backgroundColor: widget.bgColor || '#10b981',
+              color: widget.textColor || '#ffffff',
+            }}
+            className={`fixed ${posClass} z-40 px-3.5 py-2.5 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-bold cursor-pointer transition-all border border-white/20 backdrop-blur-xs select-none`}
+          >
+            <span>{widget.label}</span>
+            {widget.badge && (
+              <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[10px]">
+                {widget.badge}
+              </span>
+            )}
+          </motion.button>
+        );
+      })}
 
       {/* تنبيه منبثق عند نسخ الرابط أو المشاركة */}
       {toastMessage && (

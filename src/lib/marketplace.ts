@@ -12,9 +12,11 @@ export interface ProductItem {
   user_id?: string | null;
   created_at: string;
   seller_name?: string | null;
+  seller_verified?: boolean;
   currency?: string | null;
   is_negotiable?: boolean;
   status?: string | null;
+  likes_count?: number | null;
 }
 
 export interface FilterOptions {
@@ -64,19 +66,48 @@ export function serializeProductImages(images: string[]): string {
   return JSON.stringify(cleaned);
 }
 
+function normalizeCategoryName(name: string): string {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/[\s\-_/\\,]+/g, '')
+    .trim();
+}
+
+function categoriesMatch(catA?: string | null, catB?: string | null): boolean {
+  if (!catA || !catB) return false;
+  if (catA === catB) return true;
+  const a = normalizeCategoryName(catA);
+  const b = normalizeCategoryName(catB);
+  if (a === b) return true;
+  // التعامل مع المسميات المترادفة مثل "المنزل والأثاث" و "أثاث ومفروشات"
+  const isFurnitureA = a.includes('اثاث') || a.includes('مفروشات') || a.includes('منزل');
+  const isFurnitureB = b.includes('اثاث') || b.includes('مفروشات') || b.includes('منزل');
+  if (isFurnitureA && isFurnitureB) return true;
+
+  return a.includes(b) || b.includes(a);
+}
+
 /**
  * فلترة الإعلانات حسب القسم والقسم الفرعي والمحافظة والبحث النصي
  */
 export function filterProducts(items: ProductItem[], options: FilterOptions): ProductItem[] {
   return items.filter((item) => {
     // فلتر القسم
-    if (options.category && options.category !== 'الكل' && item.category !== options.category) {
-      return false;
+    if (options.category && options.category !== 'الكل') {
+      if (!categoriesMatch(item.category, options.category)) {
+        return false;
+      }
     }
 
     // فلتر القسم الفرعي
-    if (options.subCategory && options.subCategory !== 'الكل' && item.sub_category !== options.subCategory) {
-      return false;
+    if (options.subCategory && options.subCategory !== 'الكل') {
+      const subA = normalizeCategoryName(item.sub_category || '');
+      const subB = normalizeCategoryName(options.subCategory);
+      if (item.sub_category !== options.subCategory && subA !== subB && !subA.includes(subB) && !subB.includes(subA)) {
+        return false;
+      }
     }
 
     // فلتر المحافظة
