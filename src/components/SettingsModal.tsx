@@ -84,6 +84,7 @@ export default function SettingsModal({
   postFontScale,
   onChangePostFontScale,
   onSelectSuggestion,
+  proposals = [],
 }: SettingsModalProps) {
   const [selectedSuggestions, setSelectedSuggestions] = useState<string[]>([]);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
@@ -491,7 +492,7 @@ export default function SettingsModal({
             </div>
 
             <div className="space-y-2.5">
-              {REMAINING_PROPOSALS.map((item) => {
+              {(proposals && proposals.length > 0 ? proposals : REMAINING_PROPOSALS).map((item) => {
                 const isSelected = selectedSuggestions.includes(item.id);
                 return (
                   <div

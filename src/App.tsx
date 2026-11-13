@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Home,
@@ -40,6 +40,18 @@ import {
   Send,
   Facebook,
   ShieldCheck,
+  Gift,
+  Star,
+  Heart,
+  ShoppingBag,
+  Tag,
+  ExternalLink,
+  Info,
+  Megaphone,
+  Flame,
+  Award,
+  Globe,
+  Phone,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { uploadImageToSupabase, compressImage } from './lib/storage';
@@ -54,7 +66,7 @@ import {
   type ProductItem,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
-import ProductCard from './components/ProductCard';
+import ProductCard, { type CloudCardConfig } from './components/ProductCard';
 import ImageLightboxModal from './components/ImageLightboxModal';
 import SettingsModal, { type SortOrderOption } from './components/SettingsModal';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
@@ -88,6 +100,44 @@ export default function App() {
     order: number;
     badgeText?: string | null;
     is_primary_action?: boolean;
+    actionUrl?: string | null;
+    customPageTitle?: string | null;
+    customPageContent?: string | null;
+    activeColor?: string | null;
+  }
+  interface CloudThemeConfig {
+    primaryColor?: string;
+    primaryHoverColor?: string;
+    backgroundColor?: string;
+    darkBackgroundColor?: string;
+    headerBgColor?: string;
+    headerTextColor?: string;
+    bottomNavBgColor?: string;
+    bottomNavTextColor?: string;
+    cardBgColor?: string;
+    borderRadius?: 'none' | 'md' | 'xl' | '2xl';
+    gridColumns?: 1 | 2 | 3 | 4;
+    forcedTheme?: 'auto' | 'light' | 'dark';
+    customCss?: string;
+  }
+  interface CloudUIConfig {
+    appNameAr?: string;
+    appNameEn?: string;
+    appLogoUrl?: string;
+    headerLayout?: {
+      showHeader?: boolean;
+      showBottomNav?: boolean;
+      loginBtnPosition?: 'right' | 'left' | 'hidden';
+      notificationsBtnPosition?: 'left' | 'right' | 'hidden';
+      settingsBtnPosition?: 'left' | 'right' | 'hidden';
+      brandPosition?: 'center' | 'right' | 'left';
+      showSearchBar?: boolean;
+      showProvinceFilter?: boolean;
+      showCategoriesBar?: boolean;
+      showSubCategoriesBar?: boolean;
+    };
+    cardConfig?: CloudCardConfig;
+    texts?: Record<string, string>;
   }
 
   // شريط التنقل يأتي بالكامل من السحاب (يبدأ فارغاً)
@@ -198,7 +248,74 @@ export default function App() {
   const [botProtectionMode, setBotProtectionMode] = useState<string>('none');
 
   // دالة فتح قنوات الدعم مع إخفاء الرقم الفعلي والتحويل التلقائي
+  const uiText = (key: string, fallback: string) => {
+    const val = uiConfig?.texts?.[key];
+    return val && val.trim().length > 0 ? val : fallback;
+  };
+
+  const renderCloudIcon = (iconName?: string, className = 'w-4 h-4 shrink-0') => {
+    if (!iconName) return null;
+    const name = iconName.toLowerCase();
+    if (name.includes('whatsapp') || name.includes('message')) return <MessageCircle className={className} />;
+    if (name.includes('phone') || name.includes('call')) return <Phone className={className} />;
+    if (name.includes('send') || name.includes('telegram')) return <Send className={className} />;
+    if (name.includes('sparkle')) return <Sparkles className={className} />;
+    if (name.includes('star')) return <Star className={className} />;
+    if (name.includes('bell')) return <Bell className={className} />;
+    if (name.includes('gift')) return <Gift className={className} />;
+    if (name.includes('shield')) return <ShieldCheck className={className} />;
+    if (name.includes('link') || name.includes('external')) return <ExternalLink className={className} />;
+    if (name.includes('info')) return <Info className={className} />;
+    if (name.includes('heart')) return <Heart className={className} />;
+    if (name.includes('bag') || name.includes('shop')) return <ShoppingBag className={className} />;
+    if (name.includes('tag')) return <Tag className={className} />;
+    if (name.includes('coin')) return <Coins className={className} />;
+    if (name.includes('plus')) return <Plus className={className} />;
+    if (name.includes('user')) return <User className={className} />;
+    if (name.includes('setting')) return <Settings className={className} />;
+    if (name.includes('home')) return <Home className={className} />;
+    if (name.includes('search')) return <Search className={className} />;
+    if (name.includes('map')) return <MapPin className={className} />;
+    if (name.includes('megaphone')) return <Megaphone className={className} />;
+    if (name.includes('flame')) return <Flame className={className} />;
+    if (name.includes('award')) return <Award className={className} />;
+    if (name.includes('globe')) return <Globe className={className} />;
+    if (name.includes('alert')) return <AlertCircle className={className} />;
+    return <Sparkles className={className} />;
+  };
+
   const handleWidgetClick = (widget: CustomCloudWidget) => {
+    if (widget.actionType === 'create_ad') {
+      if (!currentUser) {
+        setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك في سوق سوريا');
+        setAuthModalInitialMode('login');
+        setShowAuthModal(true);
+      } else {
+        setShowCreateScreen(true);
+      }
+      return;
+    }
+    if (widget.actionType === 'login') {
+      setAuthModalReason(null);
+      setAuthModalInitialMode('login');
+      setShowAuthModal(true);
+      return;
+    }
+    if (widget.actionType === 'settings') {
+      setShowSettingsModal(true);
+      return;
+    }
+    if (widget.actionType === 'notifications') {
+      setShowNotifications(true);
+      return;
+    }
+    if (widget.actionType === 'modal') {
+      setActiveCloudModal({
+        title: widget.modalTitle || widget.label,
+        content: widget.modalContent || widget.actionValue || '',
+      });
+      return;
+    }
     if (!widget.actionValue) return;
     if (widget.actionType === 'url') {
       let url = widget.actionValue.trim();
@@ -290,6 +407,30 @@ export default function App() {
                   setMarketRates(cloudRates);
                 }
               }
+              if (row.title === '__APP_CONFIG_THEME__' && row.description) {
+                try {
+                  const cloudTheme = JSON.parse(row.description);
+                  if (cloudTheme && typeof cloudTheme === 'object') {
+                    setThemeConfig(cloudTheme);
+                    if (cloudTheme.forcedTheme === 'dark') {
+                      setDarkMode(true);
+                    } else if (cloudTheme.forcedTheme === 'light') {
+                      setDarkMode(false);
+                    }
+                  }
+                } catch {}
+              }
+              if (row.title === '__APP_CONFIG_UI_CONFIG__' && row.description) {
+                try {
+                  const cloudUi = JSON.parse(row.description);
+                  if (cloudUi && typeof cloudUi === 'object') {
+                    setUiConfig(cloudUi);
+                    if (cloudUi.appNameAr) {
+                      document.title = cloudUi.appNameAr;
+                    }
+                  }
+                } catch {}
+              }
               if ((row.title === '__APP_CONFIG_CUSTOM_UI__' || row.title === '__APP_CONFIG_WIDGETS__' || row.title === 'APP_CONFIG_CUSTOM_UI') && row.description) {
                 try {
                   const cloudWidgets = JSON.parse(row.description);
@@ -366,14 +507,6 @@ export default function App() {
                   }
                 } catch {}
               }
-              if ((row.title === '__APP_CONFIG_CUSTOM_UI__' || row.title === '__APP_CONFIG_WIDGETS__' || row.title === 'APP_CONFIG_CUSTOM_UI') && row.description) {
-                try {
-                  const cloudWidgets = JSON.parse(row.description);
-                  if (Array.isArray(cloudWidgets)) {
-                    setCustomWidgets(cloudWidgets);
-                  }
-                } catch {}
-              }
               if (row.title === '__APP_CONFIG_NOTICE__' && row.description) {
                 try {
                   const notObj = JSON.parse(row.description);
@@ -408,8 +541,26 @@ export default function App() {
         { event: '*', schema: 'public', table: 'products' },
         (payload) => {
           const title = (payload.new as any)?.title || (payload.old as any)?.title;
-          if (title && String(title).startsWith('__APP_CONFIG_')) {
+          if (title && (String(title).startsWith('__APP_CONFIG_') || String(title) === 'APP_CONFIG_FIELDS')) {
             fetchCloudConfig();
+          } else {
+            fetchProducts();
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'profiles' },
+        (payload) => {
+          const updatedProfile = payload.new as any;
+          if (updatedProfile?.id) {
+            setProfileVerifiedMap((prev) => ({
+              ...prev,
+              [updatedProfile.id]: Boolean(updatedProfile.is_verified),
+            }));
+            setCurrentUserProfile((prev) =>
+              prev && prev.id === updatedProfile.id ? { ...prev, ...updatedProfile } : prev
+            );
           }
         }
       )
@@ -509,19 +660,39 @@ export default function App() {
   // إعدادات الحقول الديناميكية القادمة من الإدارة
   interface CustomCloudWidget {
     id: string;
-    type?: 'button' | 'badge' | 'floating_button' | 'banner' | 'text';
+    type?: 'button' | 'badge' | 'floating_button' | 'banner' | 'text' | 'card';
     label: string;
+    subLabel?: string;
     icon?: string;
-    position?: 'top_right' | 'top_left' | 'bottom_right' | 'bottom_left' | 'top_banner';
-    actionType?: 'url' | 'whatsapp' | 'call' | 'tab' | 'alert' | 'modal';
+    position?:
+      | 'top_right'
+      | 'top_left'
+      | 'bottom_right'
+      | 'bottom_left'
+      | 'bottom_center'
+      | 'top_banner'
+      | 'header_right'
+      | 'header_left'
+      | 'above_feed'
+      | 'below_feed'
+      | 'account_top'
+      | 'account_bottom';
+    actionType?: 'url' | 'whatsapp' | 'call' | 'tab' | 'create_ad' | 'login' | 'settings' | 'notifications' | 'alert' | 'modal';
     actionValue?: string;
+    modalTitle?: string;
+    modalContent?: string;
     bgColor?: string;
     textColor?: string;
+    borderColor?: string;
     badge?: string;
     visible?: boolean;
   }
   const [customWidgets, setCustomWidgets] = useState<CustomCloudWidget[]>([]);
   const [customProductValues, setCustomProductValues] = useState<Record<string, string>>({});
+  const [themeConfig, setThemeConfig] = useState<CloudThemeConfig>({});
+  const [uiConfig, setUiConfig] = useState<CloudUIConfig>({});
+  const [profileVerifiedMap, setProfileVerifiedMap] = useState<Record<string, boolean>>({});
+  const [activeCloudModal, setActiveCloudModal] = useState<{ title: string; content: string } | null>(null);
   const [fieldsConfig, setFieldsConfig] = useState<{
     signupFields?: any[];
     postProductFields?: any[];
@@ -743,19 +914,22 @@ export default function App() {
       }
 
       if (!error && combinedData) {
-        // جلب أسماء البائعين من profiles إذا كانت مسجلة
+        // جلب أسماء وحالة توثيق البائعين من profiles
         const userIds = Array.from(new Set(combinedData.map((p) => p.user_id).filter(Boolean)));
         let profileMap: Record<string, string> = {};
+        let verifiedMap: Record<string, boolean> = {};
         if (userIds.length > 0) {
           try {
             const { data: profs } = await supabase
               .from('profiles')
-              .select('id, full_name')
+              .select('id, full_name, is_verified')
               .in('id', userIds);
             if (profs) {
-              profs.forEach((pr) => {
+              profs.forEach((pr: any) => {
                 if (pr.full_name) profileMap[pr.id] = pr.full_name;
+                verifiedMap[pr.id] = Boolean(pr.is_verified);
               });
+              setProfileVerifiedMap((prev) => ({ ...prev, ...verifiedMap }));
             }
           } catch {
             // هادئ
@@ -765,6 +939,10 @@ export default function App() {
         const enriched = combinedData.map((item) => ({
           ...item,
           seller_name: item.user_id ? profileMap[item.user_id] || 'معلن في سوق سوريا' : 'معلن في سوق سوريا',
+          seller_verified: Boolean(
+            item.seller_verified ||
+              (item.user_id && (verifiedMap[item.user_id] || verifiedUserIds.includes(item.user_id)))
+          ),
         }));
         setProducts(enriched as ProductItem[]);
       }
@@ -790,9 +968,33 @@ export default function App() {
     }
   };
 
+  const fetchCurrentUserProfile = async () => {
+    if (!currentUser?.id) {
+      setCurrentUserProfile(null);
+      return;
+    }
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', currentUser.id)
+        .maybeSingle();
+      if (data) {
+        setCurrentUserProfile(data as any);
+        setProfileVerifiedMap((prev) => ({
+          ...prev,
+          [currentUser.id]: Boolean((data as any).is_verified),
+        }));
+      }
+    } catch {
+      // هادئ
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchNotifications();
+    fetchCurrentUserProfile();
   }, [currentUser?.id]);
 
   const handleSignOut = async () => {
@@ -836,9 +1038,24 @@ export default function App() {
   };
 
   // معالجة ونشر الإعلان فعلياً إلى السحابة
+  const isCurrentUserVerified = Boolean(
+    currentUserProfile?.is_verified || (currentUser?.id && verifiedUserIds.includes(currentUser.id))
+  );
+
+  const isCurrentUserBanned = Boolean(
+    currentUserProfile?.is_banned &&
+      (!currentUserProfile?.banned_until || new Date(currentUserProfile.banned_until).getTime() > Date.now())
+  );
+
   const handlePublishSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPublishError(null);
+    if (isCurrentUserBanned) {
+      setPublishError(
+        `حسابك مقيد حالياً من النشر${currentUserProfile?.ban_reason ? ` (${currentUserProfile.ban_reason})` : ''}`
+      );
+      return;
+    }
 
     // التحقق الديناميكي الذكي من الحقول الإلزامية حسب إعدادات السحابة
     if (isPostFieldVisible('title', true) && isPostFieldRequired('title', true) && !productName.trim()) {
@@ -935,7 +1152,8 @@ export default function App() {
       if (data && data[0]) {
         const enrichedNew = {
           ...data[0],
-          seller_name: currentUser?.user_metadata?.full_name || 'أنت (المعلن)',
+          seller_name: currentUserProfile?.full_name || currentUser?.user_metadata?.full_name || 'أنت (المعلن)',
+          seller_verified: isCurrentUserVerified,
         };
         setProducts((prev) => [enrichedNew as ProductItem, ...prev]);
       } else {
@@ -969,8 +1187,19 @@ export default function App() {
     }
   };
 
+  // دمج شارة التوثيق لحظياً مع جميع الإعلانات فور تحديث قائمة الموثقين أو الملفات الشخصية في السحابة
+  const productsWithVerification = useMemo(() => {
+    return products.map((item) => ({
+      ...item,
+      seller_verified: Boolean(
+        item.seller_verified ||
+          (item.user_id && (verifiedUserIds.includes(item.user_id) || profileVerifiedMap[item.user_id]))
+      ),
+    }));
+  }, [products, verifiedUserIds, profileVerifiedMap]);
+
   // تصفية المنتجات في الرئيسية (فقط المقبولة والمعتمدة وإعلانات المستخدم الحالي المعتمدة أو قيد المراجعة)
-  const approvedProducts = products.filter(
+  const approvedProducts = productsWithVerification.filter(
     (p) =>
       (p.status === 'approved' || (currentUser && p.user_id === currentUser.id)) &&
       p.category !== '__SYSTEM_CONFIG__'
@@ -997,12 +1226,15 @@ export default function App() {
       const priceB = parseFloat(b.price?.replace(/[^\d.]/g, '') || '0') || 0;
       return priceB - priceA;
     }
-    // الافتراضي: الأحدث أولاً
+    // الإعلانات المميزة أولاً ثم الأحدث
+    const aFeat = featuredProductIds.includes(a.id) ? 1 : 0;
+    const bFeat = featuredProductIds.includes(b.id) ? 1 : 0;
+    if (aFeat !== bFeat) return bFeat - aFeat;
     return new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime();
   });
 
   // إعلانات المستخدم المسجل حالياً
-  const myProducts = products.filter((i) => currentUser && i.user_id === currentUser.id);
+  const myProducts = productsWithVerification.filter((i) => currentUser && i.user_id === currentUser.id);
 
   // تأكيد أمان إضافي كجزء أساسي من التطبيق قبل تنفيذ حذف الإعلان
   const handleConfirmDeleteProduct = async () => {
@@ -1659,13 +1891,123 @@ export default function App() {
   // ==========================================
   // الواجهة الرئيسية
   // ==========================================
+  const inlineWidgetsByPos = (pos: string) =>
+    customWidgets.filter((w) => w.visible !== false && w.position === pos);
+
+  const cloudPrimary = themeConfig.primaryColor;
+  const cloudPageBg = darkMode ? themeConfig.darkBackgroundColor : themeConfig.backgroundColor;
+  const gridColsClass =
+    themeConfig.gridColumns === 1
+      ? 'grid-cols-1'
+      : themeConfig.gridColumns === 2
+      ? 'grid-cols-1 sm:grid-cols-2'
+      : themeConfig.gridColumns === 3
+      ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+      : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
+
+  const headerCfg = uiConfig.headerLayout || {};
+  const loginPos = headerCfg.loginBtnPosition || 'right';
+  const notifPos = headerCfg.notificationsBtnPosition || 'left';
+  const settingsPos = headerCfg.settingsBtnPosition || 'left';
+  const brandPos = headerCfg.brandPosition || 'center';
+
+  const renderLoginBtn = () =>
+    !currentUser ? (
+      <button
+        type="button"
+        onClick={() => {
+          setAuthModalReason(null);
+          setAuthModalInitialMode('login');
+          setShowAuthModal(true);
+        }}
+        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+        aria-label={uiText('loginBtn', 'تسجيل دخول')}
+      >
+        <LogIn className="w-3 h-3" />
+        <span>{uiText('loginBtn', 'تسجيل دخول')}</span>
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={() => setActiveTab('me')}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl ${darkMode ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800' : 'bg-emerald-50 text-emerald-800 border-emerald-100'} text-[11px] font-bold transition-colors cursor-pointer border`}
+      >
+        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+        <span className="max-w-[75px] truncate">
+          {currentUserProfile?.full_name?.split(' ')[0] || currentUser.user_metadata?.full_name?.split(' ')[0] || 'حسابي'}
+        </span>
+        {isCurrentUserVerified && (
+          <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
+        )}
+      </button>
+    );
+
+  const renderNotifBtn = () => (
+    <button
+      type="button"
+      onClick={() => {
+        if (!currentUser) {
+          setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للاطلاع على الإشعارات والتنبيهات المخصصة لك');
+          setAuthModalInitialMode('login');
+          setShowAuthModal(true);
+        } else {
+          setShowNotifications(true);
+        }
+      }}
+      className={`relative p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
+      aria-label="الإشعارات"
+      title="الإشعارات"
+    >
+      <Bell className="w-5 h-5" />
+      {unreadCount > 0 && (
+        <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white" />
+      )}
+    </button>
+  );
+
+  const renderSettingsBtn = () => (
+    <button
+      type="button"
+      onClick={() => {
+        if (!currentUser) {
+          setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للوصول إلى إعدادات التطبيق وتخصيص تجربتك');
+          setAuthModalInitialMode('login');
+          setShowAuthModal(true);
+        } else {
+          setShowSettingsModal(true);
+        }
+      }}
+      className={`p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
+      aria-label="إعدادات التطبيق"
+      title="إعدادات التطبيق"
+    >
+      <Settings className="w-5 h-5" />
+    </button>
+  );
+
   return (
     <div
       onMouseDown={handleTouchStart}
       onMouseMove={handleTouchMove}
       onMouseUp={handleTouchEnd}
+      style={cloudPageBg ? { backgroundColor: cloudPageBg } : undefined}
       className={`min-h-screen ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-800'} flex flex-col justify-between select-none transition-colors duration-150 relative`}
     >
+      {(cloudPrimary || themeConfig.borderRadius || themeConfig.customCss) && (
+        <style id="souq-cloud-theme">{`
+          ${cloudPrimary ? `
+            .bg-emerald-600 { background-color: ${cloudPrimary} !important; }
+            .hover\:bg-emerald-700:hover { background-color: ${themeConfig.primaryHoverColor || cloudPrimary} !important; filter: brightness(0.92); }
+            .text-emerald-600, .text-emerald-700 { color: ${cloudPrimary} !important; }
+            .border-emerald-500, .border-emerald-600 { border-color: ${cloudPrimary} !important; }
+          ` : ''}
+          ${themeConfig.borderRadius ? `
+            .rounded-2xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.375rem' : themeConfig.borderRadius === 'xl' ? '0.75rem' : '1rem'} !important; }
+            .rounded-xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.25rem' : themeConfig.borderRadius === 'xl' ? '0.5rem' : '0.75rem'} !important; }
+          ` : ''}
+          ${themeConfig.customCss || ''}
+        `}</style>
+      )}
       {/* شريط السحب لتحديث الصفحة الحالية (Pull-to-refresh) */}
       {(pullDistance > 0 || isRefreshing) && (
         <div
@@ -1736,100 +2078,112 @@ export default function App() {
         </aside>
       )}
 
-      {/* أعلى الشاشة: اسم التطبيق وهو سوق سوريا، وفي أعلى اليمين زر تسجيل الدخول، وفي أعلى اليسار الجرس والإعدادات على يساره */}
-      <header className={`sticky top-0 z-30 ${darkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white border-slate-200'} border-b px-4 py-2.5 shadow-xs transition-colors duration-150`}>
-        <div className="max-w-7xl mx-auto w-full px-2 sm:px-4 relative flex items-center justify-between">
-          {/* في أعلى اليمين: زر عائم صغير ومضبوط لتسجيل الدخول لا يغطي اسم سوق سوريا */}
-          <div className="flex items-center">
-            {!currentUser ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthModalReason(null);
-                  setAuthModalInitialMode('login');
-                  setShowAuthModal(true);
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
-                aria-label="تسجيل دخول"
-              >
-                <LogIn className="w-3 h-3" />
-                <span>تسجيل دخول</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setActiveTab('me')}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl ${darkMode ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800' : 'bg-emerald-50 text-emerald-800 border-emerald-100'} text-[11px] font-bold transition-colors cursor-pointer border`}
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="max-w-[75px] truncate">
-                  {currentUser.user_metadata?.full_name?.split(' ')[0] || 'حسابي'}
-                </span>
-              </button>
+      {/* أعلى الشاشة: تخطيط ديناميكي بالكامل قابل للتحكم من السحابة */}
+      {headerCfg.showHeader !== false && (
+      <header
+        style={{
+          ...(themeConfig.headerBgColor ? { backgroundColor: themeConfig.headerBgColor } : {}),
+          ...(themeConfig.headerTextColor ? { color: themeConfig.headerTextColor } : {}),
+        }}
+        className={`sticky top-0 z-30 ${darkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white border-slate-200'} border-b px-4 py-2.5 shadow-xs transition-colors duration-150`}
+      >
+        <div className="max-w-7xl mx-auto w-full px-2 sm:px-4 relative flex items-center justify-between min-h-[38px]">
+          {/* يمين الترويسة */}
+          <div className="flex items-center gap-1.5 z-10">
+            {loginPos === 'right' && renderLoginBtn()}
+            {notifPos === 'right' && renderNotifBtn()}
+            {settingsPos === 'right' && renderSettingsBtn()}
+            {brandPos === 'right' && (
+              <div className="flex items-center gap-2">
+                {uiConfig.appLogoUrl && <img src={uiConfig.appLogoUrl} alt="" className="w-7 h-7 rounded-lg object-cover" />}
+                <div className="flex flex-col text-right">
+                  <h1 className="text-base sm:text-lg font-bold leading-tight">{uiConfig.appNameAr || 'سوق سوريا'}</h1>
+                  {uiConfig.appNameEn !== '' && <span className="text-[9px] font-black tracking-widest uppercase opacity-70">{uiConfig.appNameEn || 'Souq Syria'}</span>}
+                </div>
+              </div>
             )}
+            {inlineWidgetsByPos('header_right').map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => handleWidgetClick(w)}
+                style={{ backgroundColor: w.bgColor || '#059669', color: w.textColor || '#ffffff' }}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer"
+              >
+                {renderCloudIcon(w.icon, 'w-3 h-3')}
+                <span>{w.label}</span>
+              </button>
+            ))}
           </div>
 
-          {/* اسم التطبيق في الوسط: بالعربية وتحته بالإنجليزية بلون أسود وحواف بيضاء */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
-            <h1 className={`text-lg sm:text-xl font-bold tracking-tight leading-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-              سوق سوريا
-            </h1>
-            <span
-              className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase text-black"
-              style={{
-                textShadow:
-                  '1px 1px 0 #ffffff, -1px -1px 0 #ffffff, 1px -1px 0 #ffffff, -1px 1px 0 #ffffff, 0 1px 0 #ffffff, 0 -1px 0 #ffffff, 1px 0 0 #ffffff, -1px 0 0 #ffffff',
-              }}
-            >
-              Souq Syria
-            </span>
-          </div>
+          {/* وسط الترويسة */}
+          {brandPos === 'center' && (
+            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none">
+              {uiConfig.appLogoUrl && <img src={uiConfig.appLogoUrl} alt="" className="w-7 h-7 rounded-lg object-cover" />}
+              <div className="flex flex-col items-center">
+                <h1 className={`text-lg sm:text-xl font-bold tracking-tight leading-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {uiConfig.appNameAr || 'سوق سوريا'}
+                </h1>
+                {uiConfig.appNameEn !== '' && (
+                  <span
+                    className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase text-black"
+                    style={{
+                      textShadow:
+                        '1px 1px 0 #ffffff, -1px -1px 0 #ffffff, 1px -1px 0 #ffffff, -1px 1px 0 #ffffff, 0 1px 0 #ffffff, 0 -1px 0 #ffffff, 1px 0 0 #ffffff, -1px 0 0 #ffffff',
+                    }}
+                  >
+                    {uiConfig.appNameEn || 'Souq Syria'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
-          {/* في أعلى اليسار: جرس الإشعارات وإلى يساره أيقونة الإعدادات */}
-          <div className="flex items-center gap-1">
-            {/* في اليمين (ضمن الترتيب العربي): جرس الإشعارات (يطلب تسجيل دخول في وضع الضيف) */}
-            <button
-              type="button"
-              onClick={() => {
-                if (!currentUser) {
-                  setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للاطلاع على الإشعارات والتنبيهات المخصصة لك');
-                  setAuthModalInitialMode('login');
-                  setShowAuthModal(true);
-                } else {
-                  setShowNotifications(true);
-                }
-              }}
-              className={`relative p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
-              aria-label="الإشعارات"
-              title="الإشعارات"
-            >
-              <Bell className="w-5 h-5" />
-              {unreadCount > 0 && (
-                <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white" />
-              )}
-            </button>
-
-            {/* على يسار الجرس: أيقونة الإعدادات (تطلب تسجيل دخول في وضع الضيف) */}
-            <button
-              type="button"
-              onClick={() => {
-                if (!currentUser) {
-                  setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للوصول إلى إعدادات التطبيق وتخصيص تجربتك');
-                  setAuthModalInitialMode('login');
-                  setShowAuthModal(true);
-                } else {
-                  setShowSettingsModal(true);
-                }
-              }}
-              className={`p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
-              aria-label="إعدادات التطبيق"
-              title="إعدادات التطبيق"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
+          {/* يسار الترويسة */}
+          <div className="flex items-center gap-1 z-10">
+            {inlineWidgetsByPos('header_left').map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => handleWidgetClick(w)}
+                style={{ backgroundColor: w.bgColor || '#059669', color: w.textColor || '#ffffff' }}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer"
+              >
+                {renderCloudIcon(w.icon, 'w-3 h-3')}
+                <span>{w.label}</span>
+              </button>
+            ))}
+            {brandPos === 'left' && (
+              <div className="flex items-center gap-2">
+                {uiConfig.appLogoUrl && <img src={uiConfig.appLogoUrl} alt="" className="w-7 h-7 rounded-lg object-cover" />}
+                <span className="text-base font-bold">{uiConfig.appNameAr || 'سوق سوريا'}</span>
+              </div>
+            )}
+            {loginPos === 'left' && renderLoginBtn()}
+            {notifPos === 'left' && renderNotifBtn()}
+            {settingsPos === 'left' && renderSettingsBtn()}
           </div>
         </div>
       </header>
+      )}
+
+      {/* بنرات أعلى الصفحة القادمة من السحابة */}
+      {inlineWidgetsByPos('top_banner').map((widget) => (
+        <div
+          key={widget.id}
+          onClick={() => handleWidgetClick(widget)}
+          style={{ backgroundColor: widget.bgColor || '#059669', color: widget.textColor || '#ffffff' }}
+          className="w-full py-2 px-4 text-center text-xs font-bold shadow-xs cursor-pointer flex items-center justify-center gap-2 select-none shrink-0"
+        >
+          {renderCloudIcon(widget.icon)}
+          <span>{widget.label}</span>
+          {widget.badge && (
+            <span className="px-1.5 py-0.5 rounded-full bg-white/20 text-[10px]">
+              {widget.badge}
+            </span>
+          )}
+        </div>
+      ))}
 
       {/* شريط الملاحظة الإدارية القابل للتحكم من السحابة والإدارة: يظهر فقط إذا أرسلت الإدارة ملاحظة غير فارغة */}
       {adminNotice?.active && Boolean(adminNotice?.text && adminNotice.text.trim().length > 0) && (
@@ -1853,13 +2207,15 @@ export default function App() {
         <div className={`${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} border-b sticky top-[53px] z-20 shadow-2xs transition-colors duration-150`}>
           <div className="max-w-7xl mx-auto w-full">
             {/* شريط البحث وفلترة المحافظة */}
+            {(headerCfg.showSearchBar !== false || headerCfg.showProvinceFilter !== false) && (
             <div className="px-4 pt-2.5 pb-1 flex items-center gap-2 max-w-xl">
+              {headerCfg.showSearchBar !== false && (
               <div className="relative flex-1">
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="ابحث عن اسم منتج أو منطقة..."
+                  placeholder={uiText('searchPlaceholder', 'ابحث عن اسم منتج أو منطقة...')}
                   className={`w-full pl-8 pr-8 py-1.5 rounded-xl ${
                     darkMode
                       ? 'bg-slate-800 text-slate-100 border-slate-700 placeholder:text-slate-500 focus:bg-slate-800'
@@ -1879,6 +2235,8 @@ export default function App() {
                 )}
               </div>
 
+              )}
+              {headerCfg.showProvinceFilter !== false && (
               <select
                 value={filterProvince}
                 onChange={(e) => setFilterProvince(e.target.value)}
@@ -1889,16 +2247,19 @@ export default function App() {
                 } text-[11px] font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500`}
                 aria-label="تصفية حسب المحافظة"
               >
-                <option value="الكل">كل المحافظات</option>
+                <option value="الكل">{uiText('allProvinces', 'كل المحافظات')}</option>
                 {provincesData.map((prov) => (
                   <option key={prov} value={prov}>
                     {prov}
                   </option>
                 ))}
               </select>
+              )}
             </div>
+            )}
 
             {/* 1. الشريط الرئيسي للأقسام */}
+            {headerCfg.showCategoriesBar !== false && (
             <div className="px-4 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar scroll-smooth">
               {/* زر الكل يوضع أولاً قبل تكرار الأقسام */}
               <button
@@ -1940,8 +2301,9 @@ export default function App() {
               })}
             </div>
 
+            )}
             {/* 2. الأقسام الفرعية التابعة للقسم المختار */}
-            {currentCategoryData && currentCategoryData.subCategories.length > 0 && (
+            {headerCfg.showSubCategoriesBar !== false && currentCategoryData && currentCategoryData.subCategories.length > 0 && (
               <div className={`px-4 pb-2 pt-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-slate-50/70 border-slate-100'} border-t`}>
                 <button
                   type="button"
@@ -1993,7 +2355,30 @@ export default function App() {
             className="flex-1 flex flex-col"
           >
             {activeTab === 'home' ? (
-          <div className="flex-1 flex flex-col">
+          <div className="flex-1 flex flex-col space-y-4">
+            {/* عناصر وودجات أعلى قائمة الإعلانات من السحابة */}
+            {inlineWidgetsByPos('above_feed').length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                {inlineWidgetsByPos('above_feed').map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => handleWidgetClick(w)}
+                    style={{
+                      backgroundColor: w.bgColor || '#059669',
+                      color: w.textColor || '#ffffff',
+                      borderColor: w.borderColor || 'transparent',
+                    }}
+                    className="px-3.5 py-2 rounded-xl text-xs font-bold shadow-xs flex items-center gap-2 cursor-pointer border transition-transform active:scale-95"
+                  >
+                    {renderCloudIcon(w.icon)}
+                    <span>{w.label}</span>
+                    {w.badge && <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[10px]">{w.badge}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {loadingProducts ? (
               <div className="flex-1 flex items-center justify-center py-20 text-slate-400">
                 <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -2001,11 +2386,11 @@ export default function App() {
             ) : currentCategoryItems.length === 0 ? (
               <div className="flex-1 flex items-center justify-center py-20 text-center">
                 <p className="text-sm font-medium text-slate-400">
-                  لا توجد منشورات حالياً في هذا القسم
+                  {uiText('noProducts', 'لا توجد منشورات حالياً في هذا القسم')}
                 </p>
               </div>
             ) : (
-              <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+              <div className={`w-full grid ${gridColsClass} gap-4 sm:gap-5`}>
                 {currentCategoryItems.map((item) => (
                   <ProductCard
                     key={item.id}
@@ -2016,7 +2401,32 @@ export default function App() {
                     onShare={handleShareProduct}
                     fontScale={postFontScale}
                     isFeatured={featuredProductIds.includes(item.id)}
+                    cardConfig={{
+                      ...uiConfig.cardConfig,
+                      cardBgColor: uiConfig.cardConfig?.cardBgColor || themeConfig.cardBgColor,
+                    }}
                   />
+                ))}
+              </div>
+            )}
+
+            {/* عناصر وودجات أسفل قائمة الإعلانات من السحابة */}
+            {inlineWidgetsByPos('below_feed').length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                {inlineWidgetsByPos('below_feed').map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => handleWidgetClick(w)}
+                    style={{
+                      backgroundColor: w.bgColor || '#059669',
+                      color: w.textColor || '#ffffff',
+                    }}
+                    className="px-3.5 py-2 rounded-xl text-xs font-bold shadow-xs flex items-center gap-2 cursor-pointer transition-transform active:scale-95"
+                  >
+                    {renderCloudIcon(w.icon)}
+                    <span>{w.label}</span>
+                  </button>
                 ))}
               </div>
             )}
@@ -2365,11 +2775,43 @@ export default function App() {
               </div>
             )}
           </div>
+        ) : activeTab !== 'me' && navItems.some((n) => n.key === activeTab && (n.customPageContent || n.customPageTitle)) ? (
+          (() => {
+            const customNav = navItems.find((n) => n.key === activeTab);
+            return (
+              <div className="flex-1 flex flex-col py-4 space-y-4">
+                <div className={`rounded-2xl p-5 border shadow-2xs space-y-3 ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800'}`}>
+                  <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    {renderCloudIcon(customNav?.iconName, 'w-5 h-5 text-emerald-600')}
+                    <h3 className="font-bold text-base">{customNav?.customPageTitle || customNav?.label}</h3>
+                  </div>
+                  <div className="text-xs leading-relaxed whitespace-pre-line">
+                    {customNav?.customPageContent || ''}
+                  </div>
+                </div>
+              </div>
+            );
+          })()
         ) : (
           /* ==========================================
              قسم "أنا": مصادقة حقيقية مع سحابة Supabase
              ========================================== */
-          <div className="flex-1 flex flex-col py-4">
+          <div className="flex-1 flex flex-col py-4 space-y-4">
+            {inlineWidgetsByPos('account_top').map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => handleWidgetClick(w)}
+                style={{ backgroundColor: w.bgColor || '#059669', color: w.textColor || '#ffffff' }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold shadow-xs flex items-center justify-between cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  {renderCloudIcon(w.icon)}
+                  <span>{w.label}</span>
+                </div>
+                {w.badge && <span className="px-2 py-0.5 rounded-full bg-black/20 text-[10px]">{w.badge}</span>}
+              </button>
+            ))}
             {authLoading ? (
               <div className="flex-1 flex items-center justify-center py-20">
                 <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -2381,12 +2823,25 @@ export default function App() {
                   <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-2 font-bold text-xl">
                     {currentUser.user_metadata?.full_name?.charAt(0) || currentUser.email?.charAt(0).toUpperCase()}
                   </div>
-                  <h3 className="font-bold text-slate-900 text-sm">
-                    {currentUser.user_metadata?.full_name || currentUser.email}
-                  </h3>
+                  <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                    <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+                      {currentUserProfile?.full_name || currentUser.user_metadata?.full_name || currentUser.email}
+                    </h3>
+                    {isCurrentUserVerified && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400 font-black text-[10px] shadow-2xs">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
+                        <span>حساب موثق</span>
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[11px] text-slate-400 mt-0.5">
                     {currentUser.email}
                   </span>
+                  {isCurrentUserBanned && (
+                    <div className="mt-2 px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-bold">
+                      تنبيه: حسابك مقيد مؤقتاً {currentUserProfile?.ban_reason ? `(${currentUserProfile.ban_reason})` : ''}
+                    </div>
+                  )}
 
                   {currentUser.user_metadata?.national_id && (
                     <div className="mt-3 pt-3 border-t border-slate-100 w-full grid grid-cols-2 gap-2 text-right text-xs">
@@ -2574,6 +3029,21 @@ export default function App() {
                 </div>
               </div>
             )}
+            {inlineWidgetsByPos('account_bottom').map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => handleWidgetClick(w)}
+                style={{ backgroundColor: w.bgColor || '#059669', color: w.textColor || '#ffffff' }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold shadow-xs flex items-center justify-between cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  {renderCloudIcon(w.icon)}
+                  <span>{w.label}</span>
+                </div>
+                {w.badge && <span className="px-2 py-0.5 rounded-full bg-black/20 text-[10px]">{w.badge}</span>}
+              </button>
+            ))}
           </div>
         )}
       </motion.div>
@@ -2586,8 +3056,14 @@ export default function App() {
           - في اليسار: قسم أنا
       */}
       {/* شريط التنقل السفلي الديناميكي المقروء من السحابة حصراً */}
-      {navItems.length > 0 && (
-        <nav className={`sticky bottom-0 z-30 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} border-t px-2 sm:px-4 py-1.5 shadow-sm transition-colors duration-150`}>
+      {navItems.length > 0 && headerCfg.showBottomNav !== false && (
+        <nav
+          style={{
+            ...(themeConfig.bottomNavBgColor ? { backgroundColor: themeConfig.bottomNavBgColor } : {}),
+            ...(themeConfig.bottomNavTextColor ? { color: themeConfig.bottomNavTextColor } : {}),
+          }}
+          className={`sticky bottom-0 z-30 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} border-t px-2 sm:px-4 py-1.5 shadow-sm transition-colors duration-150`}
+        >
           <div className="max-w-xl md:max-w-2xl mx-auto w-full flex items-center justify-around relative min-h-[48px]">
             {navItems
               .filter((item) => item.is_visible !== false)
@@ -2636,6 +3112,7 @@ export default function App() {
                   if (name.includes('bell') || name.includes('إشعار')) return <Bell className="w-5 h-5" />;
                   if (name.includes('setting') || name.includes('إعداد')) return <Settings className="w-5 h-5" />;
                   if (name.includes('search') || name.includes('بحث')) return <Search className="w-5 h-5" />;
+                  if (iconName) return renderCloudIcon(iconName, 'w-5 h-5');
                   return <Home className="w-5 h-5" />;
                 };
 
@@ -2646,7 +3123,11 @@ export default function App() {
                     whileTap={{ scale: 0.92 }}
                     transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                     onClick={() => {
-                      if (item.key === 'add' || item.key === 'create') {
+                      if (item.actionUrl) {
+                        let url = item.actionUrl.trim();
+                        if (!url.startsWith('http')) url = 'https://' + url;
+                        window.open(url, '_blank');
+                      } else if (item.key === 'add' || item.key === 'create') {
                         if (!currentUser) {
                           setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك');
                           setAuthModalInitialMode('login');
@@ -3009,64 +3490,94 @@ export default function App() {
         </div>
       )}
 
-      {/* الأزرار والعناصر العائمة القادمة من السحابة ديناميكياً */}
-      {customWidgets.filter((w) => w.visible !== false).map((widget) => {
-        const isBottomLeft = widget.position === 'bottom_left';
-        const isBottomRight = widget.position === 'bottom_right';
-        const isTopLeft = widget.position === 'top_left';
-        const isTopRight = widget.position === 'top_right';
-        const isTopBanner = widget.position === 'top_banner';
+      {/* الأزرار والعناصر العائمة والبنرات القادمة من السحابة ديناميكياً */}
+      {customWidgets
+        .filter((w) =>
+          w.visible !== false &&
+          ['top_right', 'top_left', 'bottom_right', 'bottom_left', 'bottom_center', undefined].includes(
+            w.position
+          )
+        )
+        .map((widget) => {
+          const isBottomLeft = widget.position === 'bottom_left';
+          const isBottomRight = widget.position === 'bottom_right';
+          const isBottomCenter = widget.position === 'bottom_center';
+          const isTopLeft = widget.position === 'top_left';
 
-        if (isTopBanner) {
+          const posClass = isBottomLeft
+            ? 'bottom-20 left-4'
+            : isBottomRight
+            ? 'bottom-20 right-4'
+            : isBottomCenter
+            ? 'bottom-20 left-1/2 -translate-x-1/2'
+            : isTopLeft
+            ? 'top-16 left-4'
+            : 'top-16 right-4';
+
           return (
-            <div
+            <motion.button
               key={widget.id}
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              type="button"
               onClick={() => handleWidgetClick(widget)}
-              style={{ backgroundColor: widget.bgColor || '#059669', color: widget.textColor || '#ffffff' }}
-              className="w-full py-2 px-4 text-center text-xs font-bold shadow-xs cursor-pointer flex items-center justify-center gap-2 select-none"
+              style={{
+                backgroundColor: widget.bgColor || '#10b981',
+                color: widget.textColor || '#ffffff',
+                borderColor: widget.borderColor || 'rgba(255,255,255,0.2)',
+              }}
+              className={`fixed ${posClass} z-40 px-3.5 py-2.5 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-bold cursor-pointer transition-all border backdrop-blur-xs select-none`}
             >
+              {renderCloudIcon(widget.icon)}
               <span>{widget.label}</span>
               {widget.badge && (
-                <span className="px-1.5 py-0.5 rounded-full bg-white/20 text-[10px]">
+                <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[10px]">
                   {widget.badge}
                 </span>
               )}
-            </div>
+            </motion.button>
           );
-        }
+        })}
 
-        const posClass = isBottomLeft
-          ? 'bottom-20 left-4'
-          : isBottomRight
-          ? 'bottom-20 right-4'
-          : isTopLeft
-          ? 'top-16 left-4'
-          : 'top-16 right-4';
-
-        return (
-          <motion.button
-            key={widget.id}
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            type="button"
-            onClick={() => handleWidgetClick(widget)}
-            style={{
-              backgroundColor: widget.bgColor || '#10b981',
-              color: widget.textColor || '#ffffff',
-            }}
-            className={`fixed ${posClass} z-40 px-3.5 py-2.5 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-bold cursor-pointer transition-all border border-white/20 backdrop-blur-xs select-none`}
+      {/* نافذة منبثقة ديناميكية للودجات والأزرار السحابية (modal) */}
+      {activeCloudModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setActiveCloudModal(null)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-2xl shadow-2xl border p-5 space-y-3 text-right ${
+              darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-100 text-slate-900'
+            }`}
           >
-            <span>{widget.label}</span>
-            {widget.badge && (
-              <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[10px]">
-                {widget.badge}
-              </span>
-            )}
-          </motion.button>
-        );
-      })}
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <h3 className="font-bold text-sm">{activeCloudModal.title}</h3>
+              <button
+                type="button"
+                onClick={() => setActiveCloudModal(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs leading-relaxed whitespace-pre-line text-slate-600 dark:text-slate-300">
+              {activeCloudModal.content}
+            </p>
+            <button
+              type="button"
+              onClick={() => setActiveCloudModal(null)}
+              className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+            >
+              حسناً
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* تنبيه منبثق عند نسخ الرابط أو المشاركة */}
       {toastMessage && (

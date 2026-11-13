@@ -28,6 +28,22 @@ import {
 } from '../lib/marketplace';
 import { supabase } from '../lib/supabase';
 
+export interface CloudCardConfig {
+  showVerifiedBadge?: boolean;
+  showSellerName?: boolean;
+  showLocation?: boolean;
+  showTimeAgo?: boolean;
+  showPrice?: boolean;
+  showWhatsappBtn?: boolean;
+  showCallBtn?: boolean;
+  showShareBtn?: boolean;
+  showFavoriteBtn?: boolean;
+  showLikesBtn?: boolean;
+  whatsappBtnText?: string;
+  callBtnText?: string;
+  cardBgColor?: string;
+}
+
 interface ProductCardProps {
   item: ProductItem;
   isFavorite: boolean;
@@ -36,6 +52,7 @@ interface ProductCardProps {
   onShare: (item: ProductItem) => void;
   fontScale?: number;
   isFeatured?: boolean;
+  cardConfig?: CloudCardConfig;
 }
 
 export default function ProductCard({
@@ -46,6 +63,7 @@ export default function ProductCard({
   onShare,
   fontScale = 100,
   isFeatured = false,
+  cardConfig,
 }: ProductCardProps) {
   const images = parseProductImages(item.image_url);
   const scale = (fontScale || 100) / 100;
@@ -67,7 +85,7 @@ export default function ProductCard({
       await supabase.from('reports').insert({
         product_id: item.id,
         product_title: item.title,
-        reporter_name: 'مستخدم التطبيق',
+        reported_user_name: item.seller_name || 'معلن في سوق سوريا',
         reason: reportReason,
         details: reportDetails.trim() || null,
         status: 'pending',
@@ -117,6 +135,7 @@ export default function ProductCard({
 
   return (
     <article
+      style={cardConfig?.cardBgColor ? { backgroundColor: cardConfig.cardBgColor } : undefined}
       className={`rounded-2xl bg-white dark:bg-slate-900 border ${
         isFeatured
           ? 'border-amber-400 ring-2 ring-amber-400/20 dark:border-amber-500/80'
@@ -137,18 +156,20 @@ export default function ProductCard({
           </div>
           <div className="flex flex-col text-right">
             <div className="flex items-center gap-1">
-              <span
-                style={{ fontSize: `${0.75 * scale}rem` }}
-                className="font-bold text-slate-900 dark:text-slate-100 leading-tight"
-              >
-                {item.seller_name || 'مستخدم سوق سوريا'}
-              </span>
-              {item.seller_verified === true && (
+              {cardConfig?.showSellerName !== false && (
+                <span
+                  style={{ fontSize: `${0.75 * scale}rem` }}
+                  className="font-bold text-slate-900 dark:text-slate-100 leading-tight"
+                >
+                  {item.seller_name || 'معلن في سوق سوريا'}
+                </span>
+              )}
+              {item.seller_verified === true && cardConfig?.showVerifiedBadge !== false && (
                 <span
                   title="حساب موثق رسمياً من الإدارة"
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400 font-black text-[10px] shadow-2xs"
                 >
-                  <CheckCircle2 className="w-3 h-3 text-amber-500 fill-amber-400 shrink-0" />
+                  <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
                   <span>موثق</span>
                 </span>
               )}
@@ -172,7 +193,9 @@ export default function ProductCard({
 
         {/* في اليسار: المحافظة وتوقيت النشر وزر القائمة (3 نقاط) */}
         <div className="flex items-center gap-2">
+          {(cardConfig?.showLocation !== false || cardConfig?.showTimeAgo !== false) && (
           <div className="flex flex-col items-end text-left">
+            {cardConfig?.showLocation !== false && (
             <span
               style={{ fontSize: `${0.6875 * scale}rem` }}
               className="flex items-center gap-1 font-semibold text-slate-700 dark:text-slate-300"
@@ -180,6 +203,8 @@ export default function ProductCard({
               <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
               <span>{item.province}</span>
             </span>
+            )}
+            {cardConfig?.showTimeAgo !== false && (
             <span
               style={{ fontSize: `${0.625 * scale}rem` }}
               className="flex items-center gap-1 text-slate-400"
@@ -187,7 +212,9 @@ export default function ProductCard({
               <Clock className="w-2.5 h-2.5 text-slate-400" />
               <span>{formatTimeAgo(item.created_at)}</span>
             </span>
+            )}
           </div>
+          )}
 
           {/* زر النقاط الثلاث ... مع القائمة المنبثقة */}
           <div className="relative">
@@ -259,7 +286,7 @@ export default function ProductCard({
           >
             {item.title}
           </h3>
-          {item.price && (
+          {item.price && cardConfig?.showPrice !== false && (
             <span
               style={{ fontSize: `${0.75 * scale}rem` }}
               className="font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-100 dark:border-emerald-800 px-2 py-0.5 rounded-lg whitespace-nowrap shrink-0"
@@ -380,8 +407,9 @@ export default function ProductCard({
       )}
 
       {/* 4. أزرار التواصل المباشر (واتساب + اتصال خلوي) */}
+      {item.whatsapp && (cardConfig?.showWhatsappBtn !== false || cardConfig?.showCallBtn !== false) && (
       <div className="px-3.5 py-2 flex items-center gap-2 border-t border-slate-100 bg-slate-50/40">
-        {item.whatsapp && (
+        {item.whatsapp && cardConfig?.showWhatsappBtn !== false && (
           <a
             href={formatWhatsappUrl(item.whatsapp)}
             target="_blank"
@@ -389,25 +417,28 @@ export default function ProductCard({
             className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-2xs transition-all active:scale-95"
           >
             <MessageCircle className="w-3.5 h-3.5" />
-            <span>تواصل واتساب</span>
+            <span>{cardConfig?.whatsappBtnText || 'تواصل واتساب'}</span>
           </a>
         )}
 
-        {item.whatsapp && (
+        {item.whatsapp && cardConfig?.showCallBtn !== false && (
           <a
             href={formatDirectCallUrl(item.whatsapp)}
             className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs border border-slate-200 dark:border-slate-700 transition-all active:scale-95"
             title="اتصال هاتفي مباشر"
           >
             <Phone className="w-3.5 h-3.5" />
-            <span>اتصال</span>
+            <span>{cardConfig?.callBtnText || 'اتصال'}</span>
           </a>
         )}
       </div>
+      )}
 
       {/* 5. الشريط التفاعلي أسفل الإعلان */}
+      {(cardConfig?.showFavoriteBtn !== false || cardConfig?.showShareBtn !== false) && (
       <footer className="px-3.5 py-2 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
         {/* في اليمين: زر القلب التفاعلي مع انتقال سلس ولون أحمر */}
+        {cardConfig?.showFavoriteBtn !== false ? (
         <button
           type="button"
           onClick={() => onToggleFavorite(item.id)}
@@ -428,18 +459,22 @@ export default function ProductCard({
           >
             {isFavorite ? 'معجب به' : 'إعجاب'}
           </span>
-          <span
-            className={`text-[11px] font-bold px-1.5 py-0.2 rounded-md ${
-              isFavorite
-                ? 'bg-red-50 dark:bg-red-950/60 text-red-600 dark:text-red-400'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 group-hover:text-red-500'
-            }`}
-          >
-            {(item.likes_count || 0).toLocaleString('ar-SY')}
-          </span>
+          {cardConfig?.showLikesBtn !== false && (
+            <span
+              className={`text-[11px] font-bold px-1.5 py-0.2 rounded-md ${
+                isFavorite
+                  ? 'bg-red-50 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 group-hover:text-red-500'
+              }`}
+            >
+              {(item.likes_count || 0).toLocaleString('ar-SY')}
+            </span>
+          )}
         </button>
+        ) : <div />}
 
         {/* في اليسار: زر مشاركة المنشور */}
+        {cardConfig?.showShareBtn !== false && (
         <button
           type="button"
           onClick={() => onShare(item)}
@@ -449,7 +484,9 @@ export default function ProductCard({
           <Share2 className="w-4 h-4 text-slate-400 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" />
           <span className="text-xs font-bold">مشاركة المنشور</span>
         </button>
+        )}
       </footer>
+      )}
 
       {/* نافذة الإبلاغ عن المنشور (متصلة مباشرة بجدول reports في سوبابيس وقسم البلاغات والأمان في الإدارة) */}
       {showReportModal && (
