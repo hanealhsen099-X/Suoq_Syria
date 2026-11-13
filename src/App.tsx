@@ -66,7 +66,10 @@ import {
   type ProductItem,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
-import ProductCard, { type CloudCardConfig } from './components/ProductCard';
+import ProductCard, {
+  type CloudCardConfig,
+  type BadgeAppearanceConfig,
+} from './components/ProductCard';
 import ImageLightboxModal from './components/ImageLightboxModal';
 import SettingsModal, { type SortOrderOption } from './components/SettingsModal';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
@@ -103,6 +106,10 @@ export default function App() {
     actionUrl?: string | null;
     customPageTitle?: string | null;
     customPageContent?: string | null;
+    customTitle?: string | null;
+    customDescription?: string | null;
+    customButtonText?: string | null;
+    customButtonUrl?: string | null;
     activeColor?: string | null;
   }
   interface CloudThemeConfig {
@@ -119,6 +126,8 @@ export default function App() {
     gridColumns?: 1 | 2 | 3 | 4;
     forcedTheme?: 'auto' | 'light' | 'dark';
     customCss?: string;
+    verifiedBadge?: BadgeAppearanceConfig;
+    featuredBadge?: BadgeAppearanceConfig;
   }
   interface CloudUIConfig {
     appNameAr?: string;
@@ -1937,7 +1946,16 @@ export default function App() {
           {currentUserProfile?.full_name?.split(' ')[0] || currentUser.user_metadata?.full_name?.split(' ')[0] || 'حسابي'}
         </span>
         {isCurrentUserVerified && (
-          <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
+          <CheckCircle2
+            style={
+              themeConfig.verifiedBadge?.iconColor
+                ? { color: '#ffffff', fill: themeConfig.verifiedBadge.iconColor }
+                : undefined
+            }
+            className={`w-3.5 h-3.5 shrink-0 ${
+              themeConfig.verifiedBadge?.iconColor ? '' : 'text-white fill-amber-500'
+            }`}
+          />
         )}
       </button>
     );
@@ -1985,6 +2003,33 @@ export default function App() {
     </button>
   );
 
+  const vBadgeCfg = themeConfig.verifiedBadge;
+  const vBadgeEffectClass =
+    vBadgeCfg?.effect === 'shimmer'
+      ? 'souq-badge-shimmer'
+      : vBadgeCfg?.effect === 'glow'
+      ? 'souq-badge-glow'
+      : vBadgeCfg?.effect === 'metallic_gold'
+      ? 'souq-badge-metallic'
+      : '';
+  const vBadgeInlineStyle: React.CSSProperties | undefined = vBadgeCfg
+    ? ({
+        ...(vBadgeCfg.textColor ? { color: vBadgeCfg.textColor } : {}),
+        ...(vBadgeCfg.borderColor ? { borderColor: vBadgeCfg.borderColor } : {}),
+        ...(vBadgeCfg.useGradient && vBadgeCfg.bgColor && vBadgeCfg.gradientTo
+          ? { backgroundImage: `linear-gradient(135deg, ${vBadgeCfg.bgColor}, ${vBadgeCfg.gradientTo})` }
+          : vBadgeCfg.bgColor
+          ? { backgroundColor: vBadgeCfg.bgColor }
+          : {}),
+        ...(vBadgeCfg.effect === 'glow' || vBadgeCfg.effect === 'metallic_gold'
+          ? {
+              boxShadow: `0 0 12px ${vBadgeCfg.glowColor || 'rgba(245, 158, 11, 0.55)'}`,
+              '--souq-glow-color': vBadgeCfg.glowColor || 'rgba(245, 158, 11, 0.55)',
+            }
+          : {}),
+      } as React.CSSProperties)
+    : undefined;
+
   return (
     <div
       onMouseDown={handleTouchStart}
@@ -1993,21 +2038,43 @@ export default function App() {
       style={cloudPageBg ? { backgroundColor: cloudPageBg } : undefined}
       className={`min-h-screen ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-800'} flex flex-col justify-between select-none transition-colors duration-150 relative`}
     >
-      {(cloudPrimary || themeConfig.borderRadius || themeConfig.customCss) && (
-        <style id="souq-cloud-theme">{`
-          ${cloudPrimary ? `
-            .bg-emerald-600 { background-color: ${cloudPrimary} !important; }
-            .hover\:bg-emerald-700:hover { background-color: ${themeConfig.primaryHoverColor || cloudPrimary} !important; filter: brightness(0.92); }
-            .text-emerald-600, .text-emerald-700 { color: ${cloudPrimary} !important; }
-            .border-emerald-500, .border-emerald-600 { border-color: ${cloudPrimary} !important; }
-          ` : ''}
-          ${themeConfig.borderRadius ? `
-            .rounded-2xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.375rem' : themeConfig.borderRadius === 'xl' ? '0.75rem' : '1rem'} !important; }
-            .rounded-xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.25rem' : themeConfig.borderRadius === 'xl' ? '0.5rem' : '0.75rem'} !important; }
-          ` : ''}
-          ${themeConfig.customCss || ''}
-        `}</style>
-      )}
+      <style id="souq-cloud-theme">{`
+        @keyframes souqShimmerMove {
+          0% { transform: translateX(120%) skewX(-20deg); }
+          100% { transform: translateX(-160%) skewX(-20deg); }
+        }
+        @keyframes souqGlowPulse {
+          0%, 100% { filter: brightness(1); box-shadow: 0 0 8px var(--souq-glow-color, rgba(245, 158, 11, 0.55)); }
+          50% { filter: brightness(1.08); box-shadow: 0 0 16px var(--souq-glow-color, rgba(245, 158, 11, 0.75)); }
+        }
+        .souq-badge-shimmer, .souq-badge-metallic {
+          position: relative;
+          overflow: hidden;
+        }
+        .souq-badge-shimmer::after, .souq-badge-metallic::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          width: 55%;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+          animation: souqShimmerMove 2.4s infinite ease-in-out;
+          pointer-events: none;
+        }
+        .souq-badge-glow, .souq-badge-metallic {
+          animation: souqGlowPulse 2.2s infinite ease-in-out;
+        }
+        ${cloudPrimary ? `
+          .bg-emerald-600 { background-color: ${cloudPrimary} !important; }
+          .hover\\:bg-emerald-700:hover { background-color: ${themeConfig.primaryHoverColor || cloudPrimary} !important; filter: brightness(0.92); }
+          .text-emerald-600, .text-emerald-700 { color: ${cloudPrimary} !important; }
+          .border-emerald-500, .border-emerald-600 { border-color: ${cloudPrimary} !important; }
+        ` : ''}
+        ${themeConfig.borderRadius ? `
+          .rounded-2xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.375rem' : themeConfig.borderRadius === 'xl' ? '0.75rem' : '1rem'} !important; }
+          .rounded-xl { border-radius: ${themeConfig.borderRadius === 'none' ? '0px' : themeConfig.borderRadius === 'md' ? '0.25rem' : themeConfig.borderRadius === 'xl' ? '0.5rem' : '0.75rem'} !important; }
+        ` : ''}
+        ${themeConfig.customCss || ''}
+      `}</style>
       {/* شريط السحب لتحديث الصفحة الحالية (Pull-to-refresh) */}
       {(pullDistance > 0 || isRefreshing) && (
         <div
@@ -2405,6 +2472,8 @@ export default function App() {
                       ...uiConfig.cardConfig,
                       cardBgColor: uiConfig.cardConfig?.cardBgColor || themeConfig.cardBgColor,
                     }}
+                    verifiedBadge={themeConfig.verifiedBadge}
+                    featuredBadge={themeConfig.featuredBadge}
                   />
                 ))}
               </div>
@@ -2775,19 +2844,35 @@ export default function App() {
               </div>
             )}
           </div>
-        ) : activeTab !== 'me' && navItems.some((n) => n.key === activeTab && (n.customPageContent || n.customPageTitle)) ? (
+        ) : activeTab !== 'me' && navItems.some((n) => n.key === activeTab && (n.customPageContent || n.customDescription || n.customPageTitle || n.customTitle)) ? (
           (() => {
             const customNav = navItems.find((n) => n.key === activeTab);
+            const customTargetUrl = customNav?.actionUrl || customNav?.customButtonUrl;
             return (
               <div className="flex-1 flex flex-col py-4 space-y-4">
                 <div className={`rounded-2xl p-5 border shadow-2xs space-y-3 ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800'}`}>
                   <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
                     {renderCloudIcon(customNav?.iconName, 'w-5 h-5 text-emerald-600')}
-                    <h3 className="font-bold text-base">{customNav?.customPageTitle || customNav?.label}</h3>
+                    <h3 className="font-bold text-base">
+                      {customNav?.customPageTitle || customNav?.customTitle || customNav?.label}
+                    </h3>
                   </div>
                   <div className="text-xs leading-relaxed whitespace-pre-line">
-                    {customNav?.customPageContent || ''}
+                    {customNav?.customPageContent || customNav?.customDescription || ''}
                   </div>
+                  {customTargetUrl && (
+                    <div className="pt-2">
+                      <a
+                        href={customTargetUrl.startsWith('http') ? customTargetUrl : `https://${customTargetUrl}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>{customNav?.customButtonText || 'فتح الرابط'}</span>
+                      </a>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -2828,9 +2913,25 @@ export default function App() {
                       {currentUserProfile?.full_name || currentUser.user_metadata?.full_name || currentUser.email}
                     </h3>
                     {isCurrentUserVerified && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400 font-black text-[10px] shadow-2xs">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
-                        <span>حساب موثق</span>
+                      <span
+                        style={vBadgeInlineStyle}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-black text-[10px] shadow-2xs ${
+                          vBadgeInlineStyle
+                            ? ''
+                            : 'bg-amber-50 dark:bg-amber-950/70 border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400'
+                        } ${vBadgeEffectClass}`}
+                      >
+                        <CheckCircle2
+                          style={
+                            vBadgeCfg?.iconColor
+                              ? { color: '#ffffff', fill: vBadgeCfg.iconColor }
+                              : undefined
+                          }
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            vBadgeCfg?.iconColor ? '' : 'text-white fill-amber-500'
+                          }`}
+                        />
+                        <span>{vBadgeCfg?.text ? `حساب ${vBadgeCfg.text}` : 'حساب موثق'}</span>
                       </span>
                     )}
                   </div>
@@ -3123,8 +3224,9 @@ export default function App() {
                     whileTap={{ scale: 0.92 }}
                     transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                     onClick={() => {
-                      if (item.actionUrl) {
-                        let url = item.actionUrl.trim();
+                      const targetNavUrl = item.actionUrl || item.customButtonUrl;
+                      if (targetNavUrl && !item.customPageContent && !item.customDescription && !item.customPageTitle && !item.customTitle) {
+                        let url = targetNavUrl.trim();
                         if (!url.startsWith('http')) url = 'https://' + url;
                         window.open(url, '_blank');
                       } else if (item.key === 'add' || item.key === 'create') {

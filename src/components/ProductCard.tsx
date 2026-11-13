@@ -28,6 +28,47 @@ import {
 } from '../lib/marketplace';
 import { supabase } from '../lib/supabase';
 
+export type BadgeEffectType = 'none' | 'shimmer' | 'glow' | 'metallic_gold';
+
+export interface BadgeAppearanceConfig {
+  text?: string;
+  bgColor?: string;
+  gradientTo?: string;
+  useGradient?: boolean;
+  textColor?: string;
+  borderColor?: string;
+  iconColor?: string;
+  effect?: BadgeEffectType;
+  glowColor?: string;
+  cardBorderColor?: string;
+  cardRingColor?: string;
+}
+
+function getBadgeEffectClass(effect?: BadgeEffectType): string {
+  if (effect === 'shimmer') return 'souq-badge-shimmer';
+  if (effect === 'glow') return 'souq-badge-glow';
+  if (effect === 'metallic_gold') return 'souq-badge-metallic';
+  return '';
+}
+
+function getBadgeInlineStyle(badge?: BadgeAppearanceConfig): React.CSSProperties | undefined {
+  if (!badge) return undefined;
+  const style: Record<string, string> = {};
+  if (badge.textColor) style.color = badge.textColor;
+  if (badge.borderColor) style.borderColor = badge.borderColor;
+  if (badge.useGradient && badge.bgColor && badge.gradientTo) {
+    style.backgroundImage = `linear-gradient(135deg, ${badge.bgColor}, ${badge.gradientTo})`;
+  } else if (badge.bgColor) {
+    style.backgroundColor = badge.bgColor;
+  }
+  if (badge.effect === 'glow' || badge.effect === 'metallic_gold') {
+    const glow = badge.glowColor || 'rgba(245, 158, 11, 0.55)';
+    style.boxShadow = `0 0 12px ${glow}`;
+    style['--souq-glow-color'] = glow;
+  }
+  return style as React.CSSProperties;
+}
+
 export interface CloudCardConfig {
   showVerifiedBadge?: boolean;
   showSellerName?: boolean;
@@ -53,6 +94,8 @@ interface ProductCardProps {
   fontScale?: number;
   isFeatured?: boolean;
   cardConfig?: CloudCardConfig;
+  verifiedBadge?: BadgeAppearanceConfig;
+  featuredBadge?: BadgeAppearanceConfig;
 }
 
 export default function ProductCard({
@@ -64,6 +107,8 @@ export default function ProductCard({
   fontScale = 100,
   isFeatured = false,
   cardConfig,
+  verifiedBadge,
+  featuredBadge,
 }: ProductCardProps) {
   const images = parseProductImages(item.image_url);
   const scale = (fontScale || 100) / 100;
@@ -133,9 +178,22 @@ export default function ProductCard({
     }
   };
 
+  const articleStyle: React.CSSProperties = {
+    ...(cardConfig?.cardBgColor ? { backgroundColor: cardConfig.cardBgColor } : {}),
+    ...(isFeatured && featuredBadge?.cardBorderColor ? { borderColor: featuredBadge.cardBorderColor } : {}),
+    ...(isFeatured && featuredBadge?.cardRingColor
+      ? { boxShadow: `0 0 0 2px ${featuredBadge.cardRingColor}` }
+      : {}),
+  };
+
+  const verifiedStyle = getBadgeInlineStyle(verifiedBadge);
+  const verifiedEffectClass = getBadgeEffectClass(verifiedBadge?.effect);
+  const featuredStyle = getBadgeInlineStyle(featuredBadge);
+  const featuredEffectClass = getBadgeEffectClass(featuredBadge?.effect);
+
   return (
     <article
-      style={cardConfig?.cardBgColor ? { backgroundColor: cardConfig.cardBgColor } : undefined}
+      style={Object.keys(articleStyle).length > 0 ? articleStyle : undefined}
       className={`rounded-2xl bg-white dark:bg-slate-900 border ${
         isFeatured
           ? 'border-amber-400 ring-2 ring-amber-400/20 dark:border-amber-500/80'
@@ -167,10 +225,24 @@ export default function ProductCard({
               {item.seller_verified === true && cardConfig?.showVerifiedBadge !== false && (
                 <span
                   title="حساب موثق رسمياً من الإدارة"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400 font-black text-[10px] shadow-2xs"
+                  style={verifiedStyle}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border font-black text-[10px] shadow-2xs ${
+                    verifiedStyle
+                      ? ''
+                      : 'bg-amber-50 dark:bg-amber-950/70 border-amber-300 dark:border-amber-600/80 text-amber-700 dark:text-amber-400'
+                  } ${verifiedEffectClass}`}
                 >
-                  <CheckCircle2 className="w-3.5 h-3.5 text-white fill-amber-500 shrink-0" />
-                  <span>موثق</span>
+                  <CheckCircle2
+                    style={
+                      verifiedBadge?.iconColor
+                        ? { color: '#ffffff', fill: verifiedBadge.iconColor }
+                        : undefined
+                    }
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      verifiedBadge?.iconColor ? '' : 'text-white fill-amber-500'
+                    }`}
+                  />
+                  <span>{verifiedBadge?.text || 'موثق'}</span>
                 </span>
               )}
             </div>
@@ -185,9 +257,25 @@ export default function ProductCard({
 
         {/* شارة إعلان مميز إن وجد */}
         {isFeatured && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black text-[10px] shadow-2xs">
-            <Star className="w-2.5 h-2.5 fill-slate-950 text-slate-950" />
-            <span>مميز VIP</span>
+          <span
+            style={featuredStyle}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-black text-[10px] shadow-2xs ${
+              featuredStyle
+                ? ''
+                : 'bg-gradient-to-r from-amber-400 to-amber-500 border-amber-500 text-slate-950'
+            } ${featuredEffectClass}`}
+          >
+            <Star
+              style={
+                featuredBadge?.iconColor
+                  ? { color: featuredBadge.iconColor, fill: featuredBadge.iconColor }
+                  : undefined
+              }
+              className={`w-2.5 h-2.5 shrink-0 ${
+                featuredBadge?.iconColor ? '' : 'fill-slate-950 text-slate-950'
+              }`}
+            />
+            <span>{featuredBadge?.text || 'مميز VIP'}</span>
           </span>
         )}
 
