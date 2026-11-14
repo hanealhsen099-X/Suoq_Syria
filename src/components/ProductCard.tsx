@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Heart,
   Share2,
@@ -6,7 +6,6 @@ import {
   Phone,
   MapPin,
   Clock,
-  ShieldCheck,
   ZoomIn,
   User,
   Star,
@@ -17,6 +16,8 @@ import {
   Check,
   CheckCircle2,
   X,
+  Lock,
+  Pencil,
 } from 'lucide-react';
 import {
   ProductItem,
@@ -25,6 +26,7 @@ import {
   formatWhatsappUrl,
   formatDirectCallUrl,
   formatTimeAgo,
+  extractCustomSpecsFromDescription,
 } from '../lib/marketplace';
 import { supabase } from '../lib/supabase';
 
@@ -96,6 +98,15 @@ interface ProductCardProps {
   cardConfig?: CloudCardConfig;
   verifiedBadge?: BadgeAppearanceConfig;
   featuredBadge?: BadgeAppearanceConfig;
+  hideContactForGuests?: boolean;
+  isLoggedIn?: boolean;
+  onRequireLogin?: () => void;
+  whatsappLaunchMode?: 'app' | 'web';
+  canEdit?: boolean;
+  onEdit?: (item: ProductItem) => void;
+  onTrackEvent?: (productId: string, event: 'view' | 'whatsapp' | 'call') => void;
+  visibleSpecLabels?: string[];
+  onNotify?: (msg: string) => void;
 }
 
 export default function ProductCard({
@@ -109,9 +120,32 @@ export default function ProductCard({
   cardConfig,
   verifiedBadge,
   featuredBadge,
+  hideContactForGuests = false,
+  isLoggedIn = false,
+  onRequireLogin,
+  whatsappLaunchMode = 'app',
+  canEdit = false,
+  onEdit,
+  onTrackEvent,
+  visibleSpecLabels,
+  onNotify,
 }: ProductCardProps) {
   const images = parseProductImages(item.image_url);
   const scale = (fontScale || 100) / 100;
+  const { cleanDescription, specs } = extractCustomSpecsFromDescription(item.description);
+  const cardSpecEntries = Object.entries(specs).filter(([label]) => {
+    if (!visibleSpecLabels) return true;
+    return visibleSpecLabels.includes(label);
+  });
+
+  // تسجيل المشاهدة مرة واحدة لكل إعلان عند الظهور
+  const trackedViewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (trackedViewRef.current !== item.id) {
+      trackedViewRef.current = item.id;
+      onTrackEvent?.(item.id, 'view');
+    }
+  }, [item.id, onTrackEvent]);
 
   // حالة قائمة الخيارات الثلاثية والنقاط
   const [showMenu, setShowMenu] = useState(false);
@@ -120,14 +154,16 @@ export default function ProductCard({
   const [reportDetails, setReportDetails] = useState('');
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [reportSuccess, setReportSuccess] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
   // إرسال البلاغ مباشرة لسحابة سوبابيس ليظهر في قسم البلاغات لدى الإدارة
   const handleSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmittingReport(true);
+    setReportError(null);
     try {
-      await supabase.from('reports').insert({
+      const { error } = await supabase.from('reports').insert({
         product_id: item.id,
         product_title: item.title,
         reported_user_name: item.seller_name || 'معلن في سوق سوريا',
@@ -135,6 +171,7 @@ export default function ProductCard({
         details: reportDetails.trim() || null,
         status: 'pending',
       });
+      if (error) throw error;
       setReportSuccess(true);
       setTimeout(() => {
         setShowReportModal(false);
@@ -142,7 +179,7 @@ export default function ProductCard({
         setReportDetails('');
       }, 2000);
     } catch {
-      alert('حدث خطأ أثناء إرسال البلاغ، يرجى المحاولة لاحقاً');
+      setReportError('حدث خطأ أثناء إرسال البلاغ، يرجى المحاولة لاحقاً');
     } finally {
       setIsSubmittingReport(false);
     }
@@ -161,17 +198,19 @@ export default function ProductCard({
       link.click();
       document.body.removeChild(link);
     } else {
-      alert('لا توجد صورة لهذا الإعلان لحفظها');
+      onNotify?.('لا توجد صورة لهذا الإعلان لحفظها');
     }
   };
 
   // نسخ تفاصيل الإعلان
   const handleCopyDetails = async () => {
     setShowMenu(false);
-    const textToCopy = `${item.title}\nالسعر: ${item.price ? formatPriceWithCurrency(item.price) : 'حسب الاتفاق'}\nالمحافظة: ${item.province}\n${item.description || ''}`;
+    const specsLine = cardSpecEntries.map(([k, v]) => `${k}: ${v}`).join(' • ');
+    const textToCopy = `${item.title}\nالسعر: ${item.price ? formatPriceWithCurrency(item.price) : 'حسب الاتفاق'}\nالمحافظة: ${item.province}${specsLine ? `\n${specsLine}` : ''}${cleanDescription ? `\n${cleanDescription}` : ''}`;
     try {
       await navigator.clipboard.writeText(textToCopy);
       setCopiedLink(true);
+      onNotify?.('تم نسخ تفاصيل الإعلان بنجاح');
       setTimeout(() => setCopiedLink(false), 2500);
     } catch {
       // Fallback
@@ -323,6 +362,20 @@ export default function ProductCard({
                   onClick={() => setShowMenu(false)}
                 />
                 <div className="absolute left-0 top-8 z-50 w-44 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-xl py-1 text-xs text-right animate-in fade-in-50 zoom-in-95">
+                  {canEdit && onEdit && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMenu(false);
+                        onEdit(item);
+                      }}
+                      className="w-full px-3 py-2 text-right flex items-center gap-2 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 font-semibold transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5 shrink-0" />
+                      <span>تعديل الإعلان</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => {
@@ -384,13 +437,30 @@ export default function ProductCard({
           )}
         </div>
 
-        {item.description && (
+        {cleanDescription && (
           <p
             style={{ fontSize: `${0.75 * scale}rem` }}
             className="text-slate-600 dark:text-slate-300 leading-relaxed line-clamp-2"
           >
-            {item.description}
+            {cleanDescription}
           </p>
+        )}
+
+        {cardSpecEntries.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300 pt-0.5">
+            {cardSpecEntries.slice(0, 4).map(([label, val], idx) => (
+              <span
+                key={label}
+                className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 border border-slate-200/70 dark:border-slate-700/80 rounded-md px-2 py-0.5"
+              >
+                <span className="text-slate-400 dark:text-slate-400">{label}:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-100">{val}</span>
+                {idx === 3 && cardSpecEntries.length > 4 && (
+                  <span className="text-emerald-600 mr-1">+{cardSpecEntries.length - 4}</span>
+                )}
+              </span>
+            ))}
+          </div>
         )}
 
         <div
@@ -448,7 +518,7 @@ export default function ProductCard({
             </div>
           )}
 
-          {images.length === 3 && (
+          {images.length >= 3 && (
             <div className="grid grid-cols-3 gap-1.5 aspect-video w-full rounded-xl overflow-hidden bg-slate-100 border border-slate-100 shadow-2xs">
               {/* الصورة الأولى كبيرة تأخذ عمودين */}
               <div
@@ -466,10 +536,11 @@ export default function ProductCard({
                 </div>
               </div>
 
-              {/* الصورتان الثانية والثالثة مكدستان على الجانب */}
+              {/* الصورتان الثانية والثالثة مكدستان على الجانب، مع إشارة +N للصور الإضافية */}
               <div className="col-span-1 grid grid-rows-2 gap-1.5 h-full">
                 {images.slice(1, 3).map((imgUrl, idx) => {
                   const actualIdx = idx + 1;
+                  const extraCount = idx === 1 ? images.length - 3 : 0;
                   return (
                     <div
                       key={actualIdx}
@@ -482,9 +553,15 @@ export default function ProductCard({
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-103"
                         loading="lazy"
                       />
-                      <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                        <ZoomIn className="w-4 h-4 text-white drop-shadow" />
-                      </div>
+                      {extraCount > 0 ? (
+                        <div className="absolute inset-0 bg-black/55 flex items-center justify-center text-white font-black text-sm">
+                          +{extraCount}
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                          <ZoomIn className="w-4 h-4 text-white drop-shadow" />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -494,30 +571,45 @@ export default function ProductCard({
         </div>
       )}
 
-      {/* 4. أزرار التواصل المباشر (واتساب + اتصال خلوي) */}
+      {/* 4. أزرار التواصل المباشر (واتساب + اتصال خلوي أو قفل للزوار حسب إعدادات الإدارة) */}
       {item.whatsapp && (cardConfig?.showWhatsappBtn !== false || cardConfig?.showCallBtn !== false) && (
-      <div className="px-3.5 py-2 flex items-center gap-2 border-t border-slate-100 bg-slate-50/40">
-        {item.whatsapp && cardConfig?.showWhatsappBtn !== false && (
-          <a
-            href={formatWhatsappUrl(item.whatsapp)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-2xs transition-all active:scale-95"
+      <div className="px-3.5 py-2 flex items-center gap-2 border-t border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-800/30">
+        {hideContactForGuests && !isLoggedIn ? (
+          <button
+            type="button"
+            onClick={() => onRequireLogin?.()}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs border border-slate-200 dark:border-slate-700 transition-all cursor-pointer"
           >
-            <MessageCircle className="w-3.5 h-3.5" />
-            <span>{cardConfig?.whatsappBtnText || 'تواصل واتساب'}</span>
-          </a>
-        )}
+            <Lock className="w-3.5 h-3.5 text-amber-500" />
+            <span>سجّل الدخول لعرض رقم التواصل</span>
+          </button>
+        ) : (
+          <>
+            {item.whatsapp && cardConfig?.showWhatsappBtn !== false && (
+              <a
+                href={formatWhatsappUrl(item.whatsapp, whatsappLaunchMode)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => onTrackEvent?.(item.id, 'whatsapp')}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-2xs transition-all active:scale-95"
+              >
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>{cardConfig?.whatsappBtnText || 'تواصل واتساب'}</span>
+              </a>
+            )}
 
-        {item.whatsapp && cardConfig?.showCallBtn !== false && (
-          <a
-            href={formatDirectCallUrl(item.whatsapp)}
-            className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs border border-slate-200 dark:border-slate-700 transition-all active:scale-95"
-            title="اتصال هاتفي مباشر"
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span>{cardConfig?.callBtnText || 'اتصال'}</span>
-          </a>
+            {item.whatsapp && cardConfig?.showCallBtn !== false && (
+              <a
+                href={formatDirectCallUrl(item.whatsapp)}
+                onClick={() => onTrackEvent?.(item.id, 'call')}
+                className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs border border-slate-200 dark:border-slate-700 transition-all active:scale-95"
+                title="اتصال هاتفي مباشر"
+              >
+                <Phone className="w-3.5 h-3.5" />
+                <span>{cardConfig?.callBtnText || 'اتصال'}</span>
+              </a>
+            )}
+          </>
         )}
       </div>
       )}
@@ -639,6 +731,12 @@ export default function ProductCard({
                     className="w-full text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-2 focus:ring-rose-500 resize-none"
                   />
                 </div>
+
+                {reportError && (
+                  <p className="text-xs text-rose-600 dark:text-rose-400 font-semibold bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-xl p-2">
+                    {reportError}
+                  </p>
+                )}
 
                 <div className="flex items-center gap-2 pt-1">
                   <button

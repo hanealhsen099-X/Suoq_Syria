@@ -76,9 +76,18 @@ export async function compressImage(
  * دالة رفع الصور المعتمدة حصراً لسحابة Supabase
  * تقوم بضغط الصورة محلياً في البداية، ثم ترفع الملف المضغوط إلى سلة product-images
  */
-export async function uploadImageToSupabase(fileOrBase64: File | string): Promise<string> {
-  // 1. ضغط الصورة أولاً قبل الرفع لتصغير الحجم
-  const { blob: compressedBlob, dataUrl: compressedDataUrl } = await compressImage(fileOrBase64);
+export async function uploadImageToSupabase(
+  fileOrBase64: File | string,
+  maxWidth = 1200,
+  quality = 0.78
+): Promise<string> {
+  // 1. ضغط الصورة أولاً قبل الرفع لتصغير الحجم وفق إعدادات السحابة
+  const { blob: compressedBlob, dataUrl: compressedDataUrl } = await compressImage(
+    fileOrBase64,
+    maxWidth,
+    maxWidth,
+    quality
+  );
 
   // 2. توليد اسم فريد لكل صورة
   const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.jpg`;

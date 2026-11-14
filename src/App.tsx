@@ -52,6 +52,9 @@ import {
   Award,
   Globe,
   Phone,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { uploadImageToSupabase, compressImage } from './lib/storage';
@@ -63,7 +66,25 @@ import {
   formatTimeAgo,
   formatWhatsappUrl,
   formatDirectCallUrl,
+  DEFAULT_MARKET_RULES,
+  filterCustomFieldsByCategory,
+  encodeCustomSpecsIntoDescription,
+  extractCustomSpecsFromDescription,
+  checkBannedKeywords,
+  isAdExpired,
+  canUserPostToday,
+  filterWidgetsByContext,
+  filterActiveBanners,
+  getActiveFeaturedMap,
+  resolveSellerVerificationBadge,
+  sortMarketplaceProducts,
   type ProductItem,
+  type MarketRulesConfig,
+  type PromotionalBannerSlide,
+  type FeaturedPromotionItem,
+  type VerificationTier,
+  type EngagementStatsMap,
+  type CloudFieldItem,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
 import ProductCard, {
@@ -128,6 +149,7 @@ export default function App() {
     customCss?: string;
     verifiedBadge?: BadgeAppearanceConfig;
     featuredBadge?: BadgeAppearanceConfig;
+    verificationTiers?: VerificationTier[];
   }
   interface CloudUIConfig {
     appNameAr?: string;
@@ -250,8 +272,27 @@ export default function App() {
     }
   });
 
-  // معرفات الإعلانات المميزة VIP
+  // معرفات الإعلانات المميزة VIP والجدولة الزمنية لها
   const [featuredProductIds, setFeaturedProductIds] = useState<string[]>([]);
+  const [featuredMeta, setFeaturedMeta] = useState<FeaturedPromotionItem[]>([]);
+
+  // قواعد السوق والوسائط والفلترة الذكية من السحابة
+  const [marketRules, setMarketRules] = useState<MarketRulesConfig>(DEFAULT_MARKET_RULES);
+  // سلايدر البانرات الإعلانية المصوّرة
+  const [promotionalBanners, setPromotionalBanners] = useState<PromotionalBannerSlide[]>([]);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  // رتب التوثيق المخصصة لكل مستخدم
+  const [userTiers, setUserTiers] = useState<Record<string, string>>({});
+  // طريقة فتح واتساب المفضلة (App / Web)
+  const [whatsappLaunchMode, setWhatsappLaunchMode] = useState<'app' | 'web'>(() => {
+    try {
+      return localStorage.getItem('souq_syria_whatsapp_mode') === 'web' ? 'web' : 'app';
+    } catch {
+      return 'app';
+    }
+  });
+  // وضع تعديل إعلان حالي
+  const [editingProduct, setEditingProduct] = useState<ProductItem | null>(null);
 
   // وضع حماية الروبوت (none افتراضياً أو يتم سحبه من الإدارة)
   const [botProtectionMode, setBotProtectionMode] = useState<string>('none');
@@ -331,7 +372,7 @@ export default function App() {
       if (!url.startsWith('http')) url = 'https://' + url;
       window.open(url, '_blank');
     } else if (widget.actionType === 'whatsapp') {
-      window.open(formatWhatsappUrl(widget.actionValue), '_blank');
+      window.open(formatWhatsappUrl(widget.actionValue, whatsappLaunchMode), '_blank');
     } else if (widget.actionType === 'call') {
       window.open(formatDirectCallUrl(widget.actionValue), '_self');
     } else if (widget.actionType === 'tab') {
@@ -339,6 +380,63 @@ export default function App() {
     } else if (widget.actionType === 'alert') {
       setToastMessage(widget.actionValue);
       setTimeout(() => setToastMessage(null), 3500);
+    }
+  };
+
+  const handleUpdateWhatsappMode = (mode: 'app' | 'web') => {
+    setWhatsappLaunchMode(mode);
+    try {
+      localStorage.setItem('souq_syria_whatsapp_mode', mode);
+    } catch {}
+  };
+
+  const handleClearAppCache = () => {
+    try {
+      sessionStorage.removeItem('souq_dismissed_broadcast_id');
+      localStorage.removeItem('souq_syria_sort_order');
+      localStorage.removeItem('souq_syria_post_font_scale');
+    } catch {}
+    setDismissedBroadcastId('');
+    setSearchQuery('');
+    setFilterProvince('الكل');
+    setActiveCategoryName('الكل');
+    setActiveSubCategory('الكل');
+    setSortOrder(marketRules.defaultSortOrder || 'newest');
+    setPostFontScale(marketRules.defaultFontScale || 100);
+    fetchCloudConfig();
+    fetchProducts();
+  };
+
+  const handleBannerAction = (banner: PromotionalBannerSlide) => {
+    if (banner.actionType === 'create_ad') {
+      if (!currentUser) {
+        setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد لتتمكن من نشر إعلانك في سوق سوريا');
+        setAuthModalInitialMode('login');
+        setShowAuthModal(true);
+      } else {
+        setEditingProduct(null);
+        setShowCreateScreen(true);
+      }
+      return;
+    }
+    if (banner.actionType === 'category' && banner.actionValue) {
+      setActiveTab('home');
+      setActiveCategoryName(banner.actionValue);
+      setActiveSubCategory('الكل');
+      return;
+    }
+    if (banner.actionType === 'tab' && banner.actionValue) {
+      setActiveTab(banner.actionValue);
+      return;
+    }
+    if (banner.actionType === 'whatsapp' && banner.actionValue) {
+      window.open(formatWhatsappUrl(banner.actionValue, whatsappLaunchMode), '_blank');
+      return;
+    }
+    if (banner.actionType === 'url' && banner.actionValue) {
+      let url = banner.actionValue.trim();
+      if (!url.startsWith('http')) url = 'https://' + url;
+      window.open(url, '_blank');
     }
   };
 
@@ -535,6 +633,44 @@ export default function App() {
                   setBotProtectionMode(cloudBot);
                 }
               }
+              if (row.title === '__APP_CONFIG_MARKET_RULES__' && row.description) {
+                const cloudRules = JSON.parse(row.description) as Partial<MarketRulesConfig>;
+                if (cloudRules && typeof cloudRules === 'object') {
+                  const merged = { ...DEFAULT_MARKET_RULES, ...cloudRules };
+                  setMarketRules(merged);
+                  try {
+                    if (!localStorage.getItem('souq_syria_sort_order') && merged.defaultSortOrder) {
+                      setSortOrder(merged.defaultSortOrder);
+                    }
+                    if (!localStorage.getItem('souq_syria_post_font_scale') && merged.defaultFontScale) {
+                      setPostFontScale(merged.defaultFontScale);
+                    }
+                  } catch {}
+                  if (merged.allowedCurrencies && merged.allowedCurrencies.length > 0) {
+                    setProductCurrency((prev) =>
+                      merged.allowedCurrencies.includes(prev) ? prev : merged.allowedCurrencies[0]
+                    );
+                  }
+                }
+              }
+              if (row.title === '__APP_CONFIG_BANNERS__' && row.description) {
+                const cloudBanners = JSON.parse(row.description);
+                if (Array.isArray(cloudBanners)) {
+                  setPromotionalBanners(cloudBanners);
+                }
+              }
+              if (row.title === '__APP_CONFIG_FEATURED_META__' && row.description) {
+                const cloudFeaturedMeta = JSON.parse(row.description);
+                if (Array.isArray(cloudFeaturedMeta)) {
+                  setFeaturedMeta(cloudFeaturedMeta);
+                }
+              }
+              if (row.title === '__APP_CONFIG_USER_TIERS__' && row.description) {
+                const cloudUserTiers = JSON.parse(row.description);
+                if (cloudUserTiers && typeof cloudUserTiers === 'object' && !Array.isArray(cloudUserTiers)) {
+                  setUserTiers(cloudUserTiers);
+                }
+              }
             } catch (e) {}
           });
         }
@@ -578,6 +714,22 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
+  }, []);
+
+  useEffect(() => {
+    if (promotionalBanners.length <= 1) return;
+    const timer = setInterval(() => {
+      setCarouselIndex((prev) => prev + 1);
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [promotionalBanners.length]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      flushEngagementStats();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
   }, []);
 
   // إعداد الوضع الداكن (Dark Mode) مع حفظه في التخزين المحلي
@@ -694,6 +846,11 @@ export default function App() {
     textColor?: string;
     borderColor?: string;
     badge?: string;
+  targetProvinces?: string[];
+    targetCategories?: string[];
+    targetAudience?: 'all' | 'guests' | 'logged_in';
+    startAt?: string;
+    endAt?: string;
     visible?: boolean;
   }
   const [customWidgets, setCustomWidgets] = useState<CustomCloudWidget[]>([]);
@@ -704,7 +861,7 @@ export default function App() {
   const [activeCloudModal, setActiveCloudModal] = useState<{ title: string; content: string } | null>(null);
   const [fieldsConfig, setFieldsConfig] = useState<{
     signupFields?: any[];
-    postProductFields?: any[];
+    postProductFields?: CloudFieldItem[];
   } | null>(null);
 
   // سياسة الخصوصية الديناميكية المعتمدة من الإدارة
@@ -715,9 +872,6 @@ export default function App() {
     text: "شروط الاستخدام وسياسة الخصوصية لتطبيق سوق سوريا:\n1. الالتزام بالمصداقية في وصف المنتجات والسلع والأسعار بالليرة السورية أو العملات المعتمدة.\n2. يمنع منعاً باتاً ترويج أي سلع محظورة قانونياً أو أسلحة أو معاملات غير مشروعة داخل الجمهورية العربية السورية.\n3. توثيق الحساب بالرقم الوطني السوري يمنح صاحب الإعلان شارة التوثيق الذهبية وثقة عالية لدى المشترين.\n4. يحق لإدارة سوق سوريا إيقاف أو حظر أي حساب ينتهك شروط النشر أو ترد بحقه بلاغات احتيال لحماية المجتمع.",
     version: "1.0",
   });
-
-  // قيم الحقول المخصصة في واجهة نشر الإعلان
-  const [customProductFieldValues, setCustomProductFieldValues] = useState<Record<string, any>>({});
 
   const postFieldsList = fieldsConfig?.postProductFields;
   const isPostFieldVisible = (fieldId: string, def = true) => {
@@ -747,6 +901,12 @@ export default function App() {
         "description",
       ].includes(f.name)
   );
+  const visibleSpecLabels = useMemo(() => {
+    const labels = (postFieldsList || [])
+      .filter((f) => f.isCustom && f.showInCard !== false && f.label)
+      .map((f) => f.label);
+    return labels.length > 0 ? labels : undefined;
+  }, [postFieldsList]);
 
 
   const [currentUserProfile, setCurrentUserProfile] = useState<{
@@ -801,6 +961,11 @@ export default function App() {
   const [productPrice, setProductPrice] = useState('');
   const [productWhatsapp, setProductWhatsapp] = useState(''); // رقم واتساب إلزامي
   const [productDescription, setProductDescription] = useState('');
+
+  const visibleCategoryCustomFields = useMemo(
+    () => filterCustomFieldsByCategory(customPostFields, productCategory),
+    [customPostFields, productCategory]
+  );
 
   // نظام المفضلة (القلب التفاعلي)
   const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>(() => {
@@ -1010,34 +1175,175 @@ export default function App() {
     await supabase.auth.signOut();
   };
 
-  // اختيار وإرفاق صور المنتج (حتى 3 صور) مع ضغطها محلياً
+  // تتبع التفاعل الحقيقي (المشاهدات، نقرات الواتساب، نقرات الاتصال) ومزامنته بالسحابة
+  const pendingEngagementRef = useRef<Record<string, { views: number; whatsappClicks: number; callClicks: number }>>({});
+  const viewedSessionIdsRef = useRef<Set<string>>(new Set());
+  const engagementFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushEngagementStats = async () => {
+    const batch = pendingEngagementRef.current;
+    const keys = Object.keys(batch);
+    if (keys.length === 0) return;
+    pendingEngagementRef.current = {};
+
+    try {
+      const { data: existingRow } = await supabase
+        .from('products')
+        .select('id, description')
+        .eq('title', '__APP_CONFIG_ENGAGEMENT_STATS__')
+        .maybeSingle();
+
+      let currentStats: EngagementStatsMap = {};
+      if (existingRow?.description) {
+        try {
+          const parsed = JSON.parse(existingRow.description);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            currentStats = parsed as EngagementStatsMap;
+          }
+        } catch {}
+      }
+
+      const nowIso = new Date().toISOString();
+      for (const productId of keys) {
+        const delta = batch[productId];
+        const prev = currentStats[productId] || {
+          views: 0,
+          whatsappClicks: 0,
+          callClicks: 0,
+          updatedAt: nowIso,
+        };
+        currentStats[productId] = {
+          views: (prev.views || 0) + (delta.views || 0),
+          whatsappClicks: (prev.whatsappClicks || 0) + (delta.whatsappClicks || 0),
+          callClicks: (prev.callClicks || 0) + (delta.callClicks || 0),
+          updatedAt: nowIso,
+        };
+      }
+
+      const serialized = JSON.stringify(currentStats);
+      if (existingRow?.id) {
+        await supabase
+          .from('products')
+          .update({ description: serialized })
+          .eq('id', existingRow.id);
+      } else {
+        await supabase.from('products').insert([
+          {
+            title: '__APP_CONFIG_ENGAGEMENT_STATS__',
+            category: '__SYSTEM_CONFIG__',
+            sub_category: 'engagement_stats',
+            province: 'دمشق',
+            location: 'system',
+            whatsapp: '0000000000',
+            status: 'approved',
+            description: serialized,
+          },
+        ]);
+      }
+    } catch {
+      // مزامنة صامتة لتفادي إزعاج المستخدم
+    }
+  };
+
+  const trackEngagementEvent = React.useCallback(
+    (productId: string, event: 'view' | 'whatsapp' | 'call') => {
+      if (!productId) return;
+      if (event === 'view') {
+        if (viewedSessionIdsRef.current.has(productId)) return;
+        viewedSessionIdsRef.current.add(productId);
+      }
+
+      const entry = pendingEngagementRef.current[productId] || {
+        views: 0,
+        whatsappClicks: 0,
+        callClicks: 0,
+      };
+      if (event === 'view') entry.views += 1;
+      if (event === 'whatsapp') entry.whatsappClicks += 1;
+      if (event === 'call') entry.callClicks += 1;
+      pendingEngagementRef.current[productId] = entry;
+
+      if (engagementFlushTimerRef.current) {
+        clearTimeout(engagementFlushTimerRef.current);
+      }
+      engagementFlushTimerRef.current = setTimeout(() => {
+        flushEngagementStats();
+      }, 3500);
+    },
+    []
+  );
+
+  // بدء تعديل إعلان قائم وتعبئة حقوله الحالية
+  const handleStartEditProduct = (item: ProductItem) => {
+    if (!marketRules.allowUserEditAd) {
+      setToastMessage('تعديل الإعلانات غير متاح حالياً بقرار من الإدارة');
+      setTimeout(() => setToastMessage(null), 2500);
+      return;
+    }
+    const { cleanDescription, specs } = extractCustomSpecsFromDescription(item.description);
+    setEditingProduct(item);
+    setProductName(item.title || '');
+    setProductCategory(item.category || '');
+    setProductSubCategory(item.sub_category || '');
+    setSelectedProvince(item.province || '');
+    setProductAddress(item.location || '');
+    setProductWhatsapp(item.whatsapp || '');
+
+    const rawPrice = item.price || '';
+    const isNeg = rawPrice.includes('تفاوض');
+    const isUsd = rawPrice.includes('$');
+    const numericDigits = rawPrice.replace(/[^\d]/g, '');
+    setProductPrice(numericDigits);
+    setProductCurrency(isUsd && marketRules.allowedCurrencies.includes('USD') ? 'USD' : (marketRules.allowedCurrencies[0] || 'SYP'));
+    setProductIsNegotiable(isNeg);
+    setProductDescription(cleanDescription);
+
+    const existingImages = parseProductImages(item.image_url).map((url) => ({ preview: url }));
+    setProductImages(existingImages.slice(0, marketRules.maxImagesPerAd || 3));
+
+    const prefilledSpecs: Record<string, string> = {};
+    for (const cf of customPostFields) {
+      if (specs[cf.label]) {
+        prefilledSpecs[cf.name] = specs[cf.label];
+      } else if (specs[cf.name]) {
+        prefilledSpecs[cf.name] = specs[cf.name];
+      }
+    }
+    setCustomProductValues(prefilledSpecs);
+    setPublishError(null);
+    setPublishSuccess(false);
+    setShowCreateScreen(true);
+  };
+
+  // اختيار وإرفاق صور المنتج وفق الحد الأقصى ودقة الضغط القادمة من السحابة
   const handleMultiImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    const remainingSlots = 3 - productImages.length;
+    const maxImgs = Math.max(1, marketRules.maxImagesPerAd || 3);
+    const remainingSlots = maxImgs - productImages.length;
     if (remainingSlots <= 0) return;
     const allowedFiles = files.slice(0, remainingSlots);
+    const maxDim = marketRules.imageMaxWidth || 1200;
+    const quality = marketRules.imageQuality || 0.78;
 
     const newItems: UploadedImageItem[] = [];
     for (const file of allowedFiles) {
       try {
-        const { dataUrl } = await compressImage(file, 1200, 1200, 0.78);
+        const { dataUrl } = await compressImage(file, maxDim, maxDim, quality);
         newItems.push({ file, preview: dataUrl });
       } catch {
-        // كبديل
         const reader = new FileReader();
         reader.onloadend = () => {
-          setProductImages((prev) => [
-            ...prev,
-            { file, preview: reader.result as string },
-          ].slice(0, 3));
+          setProductImages((prev) =>
+            [...prev, { file, preview: reader.result as string }].slice(0, maxImgs)
+          );
         };
         reader.readAsDataURL(file);
       }
     }
 
     if (newItems.length > 0) {
-      setProductImages((prev) => [...prev, ...newItems].slice(0, 3));
+      setProductImages((prev) => [...prev, ...newItems].slice(0, maxImgs));
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -1046,9 +1352,10 @@ export default function App() {
     setProductImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // معالجة ونشر الإعلان فعلياً إلى السحابة
+  // معالجة ونشر أو تعديل الإعلان فعلياً إلى السحابة
   const isCurrentUserVerified = Boolean(
-    currentUserProfile?.is_verified || (currentUser?.id && verifiedUserIds.includes(currentUser.id))
+    currentUserProfile?.is_verified ||
+      (currentUser?.id && (verifiedUserIds.includes(currentUser.id) || userTiers[currentUser.id]))
   );
 
   const isCurrentUserBanned = Boolean(
@@ -1064,6 +1371,17 @@ export default function App() {
         `حسابك مقيد حالياً من النشر${currentUserProfile?.ban_reason ? ` (${currentUserProfile.ban_reason})` : ''}`
       );
       return;
+    }
+
+    // التحقق من الحد اليومي للنشر للمستخدم عند إنشاء إعلان جديد
+    if (!editingProduct && currentUser?.id && marketRules.maxDailyAdsPerUser > 0) {
+      const quota = canUserPostToday(products, currentUser.id, marketRules.maxDailyAdsPerUser);
+      if (!quota.allowed) {
+        setPublishError(
+          `عذراً، لقد بلغت الحد اليومي المسموح للنشر (${quota.limit} إعلانات خلال 24 ساعة).`
+        );
+        return;
+      }
     }
 
     // التحقق الديناميكي الذكي من الحقول الإلزامية حسب إعدادات السحابة
@@ -1099,11 +1417,28 @@ export default function App() {
       setPublishError('يرجى إرفاق صورة واحدة على الأقل للإعلان');
       return;
     }
-    for (const cf of customPostFields) {
+    for (const cf of visibleCategoryCustomFields) {
       if (cf.required && !customProductValues[cf.name]?.trim()) {
         setPublishError(`يرجى إدخال الحقل الإلزامي: ${cf.label}`);
         return;
       }
+    }
+
+    // فحص الكلمات المحظورة من السحابة
+    const specsByLabel: Record<string, string> = {};
+    for (const cf of visibleCategoryCustomFields) {
+      const val = customProductValues[cf.name]?.trim();
+      if (val) specsByLabel[cf.label] = val;
+    }
+    const keywordCheck = checkBannedKeywords(
+      [productName, productDescription, productAddress, ...Object.values(specsByLabel)],
+      marketRules.bannedKeywords || []
+    );
+    if (keywordCheck.matched && marketRules.bannedKeywordAction === 'block') {
+      setPublishError(
+        `يحتوي الإعلان على كلمات مخالفة لسياسة السوق: (${keywordCheck.matchedWords.join('، ')})`
+      );
+      return;
     }
 
     setIsPublishing(true);
@@ -1111,18 +1446,25 @@ export default function App() {
 
     try {
       let finalImageUrl = '';
+      const maxImgs = Math.max(1, marketRules.maxImagesPerAd || 3);
+      const maxDim = marketRules.imageMaxWidth || 1200;
+      const quality = marketRules.imageQuality || 0.78;
 
-      // 1. رفع الصور
+      // 1. رفع الصور الجديدة مع الإبقاء على الروابط المحفوظة مسبقاً عند التعديل
       if (productImages.length > 0) {
-        setPublishStep(`جارٍ رفع ${productImages.length} صور...`);
+        setPublishStep(`جارٍ تجهيز ${productImages.length} صور...`);
         const uploadedUrls: string[] = [];
         for (let i = 0; i < productImages.length; i++) {
-          setPublishStep(`جارٍ ضغط ورفع الصورة (${i + 1} من ${productImages.length})...`);
           const imgItem = productImages[i];
-          const uploadedUrl = await uploadImageToSupabase(imgItem.file || imgItem.preview);
-          uploadedUrls.push(uploadedUrl);
+          if (!imgItem.file && imgItem.preview && imgItem.preview.startsWith('http')) {
+            uploadedUrls.push(imgItem.preview);
+          } else {
+            setPublishStep(`جارٍ ضغط ورفع الصورة (${i + 1} من ${productImages.length})...`);
+            const uploadedUrl = await uploadImageToSupabase(imgItem.file || imgItem.preview, maxDim, quality);
+            uploadedUrls.push(uploadedUrl);
+          }
         }
-        finalImageUrl = serializeProductImages(uploadedUrls);
+        finalImageUrl = serializeProductImages(uploadedUrls, maxImgs);
       }
 
       // 2. تنسيق السعر بالعملة المختارة وقابلية التفاوض
@@ -1132,57 +1474,103 @@ export default function App() {
         productIsNegotiable
       );
 
-      // 3. حفظ الإعلان
-      setPublishStep('جارٍ حفظ الإعلان...');
-      const newProductRecord = {
-        title: productName.trim(),
-        category: productCategory,
-        sub_category: productSubCategory,
-        province: selectedProvince,
-        location: productAddress.trim(),
-        price: formattedPrice || null,
-        whatsapp: productWhatsapp.trim(),
-        image_url: finalImageUrl || null,
-        description: productDescription.trim() || null,
-        user_id: currentUser?.id || null,
-        status: 'pending', // <--- هذا السطر الجديد ليذهب للإدارة فوراً للمراجعة
-      };
+      // 3. دمج تفاصيل الوصف مع المواصفات المخصصة للقسم
+      const encodedDescription = encodeCustomSpecsIntoDescription(productDescription, specsByLabel);
 
-      const { data, error } = await supabase
-        .from('products')
-        .insert([newProductRecord])
-        .select();
+      setPublishStep(editingProduct ? 'جارٍ حفظ التعديلات...' : 'جارٍ حفظ الإعلان...');
 
-      if (error) {
-        throw error;
-      }
+      if (editingProduct) {
+        const nextStatus =
+          keywordCheck.matched || marketRules.reReviewOnEdit
+            ? 'pending'
+            : editingProduct.status || 'approved';
 
-      // إضافة الإعلان محلياً وتحديث القائمة
-      if (data && data[0]) {
-        const enrichedNew = {
-          ...data[0],
-          seller_name: currentUserProfile?.full_name || currentUser?.user_metadata?.full_name || 'أنت (المعلن)',
-          seller_verified: isCurrentUserVerified,
+        const updatedPayload = {
+          title: productName.trim(),
+          category: productCategory,
+          sub_category: productSubCategory,
+          province: selectedProvince,
+          location: productAddress.trim(),
+          price: formattedPrice || null,
+          whatsapp: productWhatsapp.trim(),
+          image_url: finalImageUrl || null,
+          description: encodedDescription || null,
+          status: nextStatus,
         };
-        setProducts((prev) => [enrichedNew as ProductItem, ...prev]);
+
+        const { data, error } = await supabase
+          .from('products')
+          .update(updatedPayload)
+          .eq('id', editingProduct.id)
+          .select();
+
+        if (error) throw error;
+
+        if (data && data[0]) {
+          setProducts((prev) =>
+            prev.map((p) =>
+              p.id === editingProduct.id
+                ? ({
+                    ...p,
+                    ...data[0],
+                    seller_name: p.seller_name,
+                    seller_verified: isCurrentUserVerified,
+                  } as ProductItem)
+                : p
+            )
+          );
+        } else {
+          fetchProducts();
+        }
       } else {
-        fetchProducts();
+        const newProductRecord = {
+          title: productName.trim(),
+          category: productCategory,
+          sub_category: productSubCategory,
+          province: selectedProvince,
+          location: productAddress.trim(),
+          price: formattedPrice || null,
+          whatsapp: productWhatsapp.trim(),
+          image_url: finalImageUrl || null,
+          description: encodedDescription || null,
+          user_id: currentUser?.id || null,
+          status: 'pending',
+        };
+
+        const { data, error } = await supabase
+          .from('products')
+          .insert([newProductRecord])
+          .select();
+
+        if (error) throw error;
+
+        if (data && data[0]) {
+          const enrichedNew = {
+            ...data[0],
+            seller_name: currentUserProfile?.full_name || currentUser?.user_metadata?.full_name || 'أنت (المعلن)',
+            seller_verified: isCurrentUserVerified,
+          };
+          setProducts((prev) => [enrichedNew as ProductItem, ...prev]);
+        } else {
+          fetchProducts();
+        }
       }
 
       setPublishSuccess(true);
       setTimeout(() => {
         setPublishSuccess(false);
         setIsPublishing(false);
-        // تصفير الحقول
+        setEditingProduct(null);
         setProductName('');
         setProductSubCategory('');
         setSelectedProvince('');
         setProductAddress('');
         setProductPrice('');
-        setProductCurrency('SYP');
+        setProductCurrency(marketRules.allowedCurrencies[0] || 'SYP');
         setProductIsNegotiable(false);
         setProductWhatsapp('');
         setProductDescription('');
+        setCustomProductValues({});
         setProductImages([]);
         setShowCreateScreen(false);
         setActiveTab('home');
@@ -1190,28 +1578,38 @@ export default function App() {
         setActiveSubCategory('الكل');
       }, 1200);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'حدث خطأ أثناء نشر الإعلان';
+      const message = err instanceof Error ? err.message : 'حدث خطأ أثناء حفظ الإعلان';
       setPublishError(message);
       setIsPublishing(false);
     }
   };
 
-  // دمج شارة التوثيق لحظياً مع جميع الإعلانات فور تحديث قائمة الموثقين أو الملفات الشخصية في السحابة
+  // دمج شارة التوثيق لحظياً مع جميع الإعلانات فور تحديث قائمة الموثقين أو رتب التوثيق في السحابة
   const productsWithVerification = useMemo(() => {
     return products.map((item) => ({
       ...item,
       seller_verified: Boolean(
         item.seller_verified ||
-          (item.user_id && (verifiedUserIds.includes(item.user_id) || profileVerifiedMap[item.user_id]))
+          (item.user_id &&
+            (verifiedUserIds.includes(item.user_id) ||
+              profileVerifiedMap[item.user_id] ||
+              userTiers[item.user_id]))
       ),
     }));
-  }, [products, verifiedUserIds, profileVerifiedMap]);
+  }, [products, verifiedUserIds, profileVerifiedMap, userTiers]);
 
-  // تصفية المنتجات في الرئيسية (فقط المقبولة والمعتمدة وإعلانات المستخدم الحالي المعتمدة أو قيد المراجعة)
+  // خريطة الإعلانات المميزة VIP النشطة حالياً (مع استبعاد المنتهية صلاحيتها وترتيب الأولوية)
+  const activeFeaturedMap = useMemo(
+    () => getActiveFeaturedMap(featuredProductIds, featuredMeta),
+    [featuredProductIds, featuredMeta]
+  );
+
+  // تصفية المنتجات في الرئيسية (المعتمدة وغير منتهية الصلاحية، وإعلانات المستخدم الحالي قيد المراجعة)
   const approvedProducts = productsWithVerification.filter(
     (p) =>
       (p.status === 'approved' || (currentUser && p.user_id === currentUser.id)) &&
-      p.category !== '__SYSTEM_CONFIG__'
+      p.category !== '__SYSTEM_CONFIG__' &&
+      !isAdExpired(p.created_at, marketRules.adExpiryDays)
   );
   const filteredCategoryItems = filterProducts(approvedProducts, {
     category: activeCategoryName,
@@ -1220,27 +1618,11 @@ export default function App() {
     searchQuery: searchQuery,
   });
 
-  // فرز الإعلانات والمنشورات حسب اختيار المستخدم (الأحدث، الأقدم، الأقل سعراً، الأعلى سعراً)
-  const currentCategoryItems = [...filteredCategoryItems].sort((a, b) => {
-    if (sortOrder === 'oldest') {
-      return new Date(a.created_at || '').getTime() - new Date(b.created_at || '').getTime();
-    }
-    if (sortOrder === 'price_asc') {
-      const priceA = parseFloat(a.price?.replace(/[^\d.]/g, '') || '0') || 0;
-      const priceB = parseFloat(b.price?.replace(/[^\d.]/g, '') || '0') || 0;
-      return priceA - priceB;
-    }
-    if (sortOrder === 'price_desc') {
-      const priceA = parseFloat(a.price?.replace(/[^\d.]/g, '') || '0') || 0;
-      const priceB = parseFloat(b.price?.replace(/[^\d.]/g, '') || '0') || 0;
-      return priceB - priceA;
-    }
-    // الإعلانات المميزة أولاً ثم الأحدث
-    const aFeat = featuredProductIds.includes(a.id) ? 1 : 0;
-    const bFeat = featuredProductIds.includes(b.id) ? 1 : 0;
-    if (aFeat !== bFeat) return bFeat - aFeat;
-    return new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime();
-  });
+  // فرز الإعلانات والمنشورات حسب الأولوية المميزة واختيار الترتيب
+  const currentCategoryItems = useMemo(
+    () => sortMarketplaceProducts(filteredCategoryItems, sortOrder, activeFeaturedMap),
+    [filteredCategoryItems, sortOrder, activeFeaturedMap]
+  );
 
   // إعلانات المستخدم المسجل حالياً
   const myProducts = productsWithVerification.filter((i) => currentUser && i.user_id === currentUser.id);
@@ -1434,13 +1816,19 @@ export default function App() {
             <button
               type="button"
               disabled={isPublishing}
-              onClick={() => setShowCreateScreen(false)}
+              onClick={() => {
+                setShowCreateScreen(false);
+                setEditingProduct(null);
+                setPublishError(null);
+              }}
               className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer p-1"
             >
               <ArrowRight className="w-5 h-5" />
               <span>رجوع</span>
             </button>
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">نشر إعلان جديد</h2>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              {editingProduct ? 'تعديل الإعلان' : 'نشر إعلان جديد'}
+            </h2>
             <div className="w-12"></div>
           </div>
         </header>
@@ -1505,10 +1893,10 @@ export default function App() {
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
-                      صور المنتج أو الإعلان (حتى 3 صور كحد أقصى) {isPostFieldRequired('images', false) && <span className="text-rose-500">*</span>}
+                      صور المنتج أو الإعلان (حتى {marketRules.maxImagesPerAd || 3} صور كحد أقصى) {isPostFieldRequired('images', false) && <span className="text-rose-500">*</span>}
                     </label>
                     <span className="text-[11px] text-slate-500 font-medium">
-                      {productImages.length} من 3 صور
+                      {productImages.length} من {marketRules.maxImagesPerAd || 3} صور
                     </span>
                   </div>
 
@@ -1549,7 +1937,7 @@ export default function App() {
                           </div>
                         ))}
 
-                        {productImages.length < 3 && (
+                        {productImages.length < (marketRules.maxImagesPerAd || 3) && (
                           <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
@@ -1557,7 +1945,7 @@ export default function App() {
                           >
                             <Plus className="w-5 h-5" />
                             <span className="text-[10px] font-bold">إضافة صورة</span>
-                            <span className="text-[9px] text-slate-400">({3 - productImages.length} متبقية)</span>
+                            <span className="text-[9px] text-slate-400">({(marketRules.maxImagesPerAd || 3) - productImages.length} متبقية)</span>
                           </button>
                         )}
                       </div>
@@ -1575,7 +1963,7 @@ export default function App() {
                       <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 shadow-xs flex items-center justify-center text-slate-400">
                         <ImageIcon className="w-5 h-5" />
                       </div>
-                      <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى 3 صور)</span>
+                      <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى {marketRules.maxImagesPerAd || 3} صور)</span>
                       <span className="text-[10px] text-slate-400">PNG, JPG (يتم ضغطها تلقائياً قبل الرفع)</span>
                     </button>
                   )}
@@ -1761,28 +2149,32 @@ export default function App() {
                           />
                         </div>
                         <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => setProductCurrency('SYP')}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                              productCurrency === 'SYP'
-                                ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
-                                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                            }`}
-                          >
-                            ل.س (سوري)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setProductCurrency('USD')}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                              productCurrency === 'USD'
-                                ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
-                                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                            }`}
-                          >
-                            $ (دولار)
-                          </button>
+                          {(marketRules.allowedCurrencies?.length ? marketRules.allowedCurrencies : ['SYP', 'USD']).includes('SYP') && (
+                            <button
+                              type="button"
+                              onClick={() => setProductCurrency('SYP')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                productCurrency === 'SYP'
+                                  ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                                  : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                              }`}
+                            >
+                              ل.س (سوري)
+                            </button>
+                          )}
+                          {(marketRules.allowedCurrencies?.length ? marketRules.allowedCurrencies : ['SYP', 'USD']).includes('USD') && (
+                            <button
+                              type="button"
+                              onClick={() => setProductCurrency('USD')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                productCurrency === 'USD'
+                                  ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                                  : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                              }`}
+                            >
+                              $ (دولار)
+                            </button>
+                          )}
                         </div>
                       </div>
                     </>
@@ -1821,13 +2213,13 @@ export default function App() {
                 </div>
               )}
 
-              {/* الحقول المخصصة الإضافية التي يحددها المشرف من لوحة الإدارة */}
-              {customPostFields && customPostFields.length > 0 && (
+              {/* الحقول المخصصة الإضافية حسب القسم المختار */}
+              {visibleCategoryCustomFields.length > 0 && (
                 <div className="space-y-3.5 pt-2 border-t border-slate-100 dark:border-slate-800">
                   <h4 className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                    معلومات وحقول إضافية
+                    مواصفات وحقول {productCategory ? `قسم ${productCategory}` : 'إضافية'}
                   </h4>
-                  {customPostFields.map((cf) => (
+                  {visibleCategoryCustomFields.map((cf) => (
                     <div key={cf.id || cf.name}>
                       <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
                         {cf.label} {cf.required && <span className="text-rose-500">*</span>}
@@ -1857,7 +2249,7 @@ export default function App() {
                         </select>
                       ) : (
                         <input
-                          type="text"
+                          type={cf.type === 'number' ? 'number' : cf.type === 'date' ? 'date' : 'text'}
                           required={cf.required}
                           value={customProductValues[cf.name] || ''}
                           onChange={(e) => setCustomProductValues((prev) => ({ ...prev, [cf.name]: e.target.value }))}
@@ -1870,7 +2262,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* زر النشر الفعلي مع مؤشر التحميل */}
+              {/* زر النشر أو حفظ التعديل مع مؤشر التحميل */}
               <div className="pt-2">
                 <button
                   type="submit"
@@ -1880,12 +2272,12 @@ export default function App() {
                   {isPublishing ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{publishStep || 'جارٍ النشر...'}</span>
+                      <span>{publishStep || 'جارٍ الحفظ...'}</span>
                     </>
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>نشر الإعلان الآن</span>
+                      <span>{editingProduct ? 'حفظ التعديلات' : 'نشر الإعلان الآن'}</span>
                     </>
                   )}
                 </button>
@@ -1900,8 +2292,17 @@ export default function App() {
   // ==========================================
   // الواجهة الرئيسية
   // ==========================================
+  const targetingContext = {
+    province: filterProvince,
+    category: activeCategoryName,
+    isLoggedIn: Boolean(currentUser),
+  };
+  const visibleContextWidgets = filterWidgetsByContext(customWidgets, targetingContext);
   const inlineWidgetsByPos = (pos: string) =>
-    customWidgets.filter((w) => w.visible !== false && w.position === pos);
+    visibleContextWidgets.filter((w) => w.position === pos);
+  const activeBanners = filterActiveBanners(promotionalBanners, targetingContext);
+  const currentBanner =
+    activeBanners.length > 0 ? activeBanners[carouselIndex % activeBanners.length] : null;
 
   const cloudPrimary = themeConfig.primaryColor;
   const cloudPageBg = darkMode ? themeConfig.darkBackgroundColor : themeConfig.backgroundColor;
@@ -2003,7 +2404,14 @@ export default function App() {
     </button>
   );
 
-  const vBadgeCfg = themeConfig.verifiedBadge;
+  const vBadgeCfg =
+    resolveSellerVerificationBadge(
+      currentUser?.id,
+      isCurrentUserVerified,
+      userTiers,
+      themeConfig.verificationTiers || [],
+      themeConfig.verifiedBadge
+    ) || themeConfig.verifiedBadge;
   const vBadgeEffectClass =
     vBadgeCfg?.effect === 'shimmer'
       ? 'souq-badge-shimmer'
@@ -2423,6 +2831,76 @@ export default function App() {
           >
             {activeTab === 'home' ? (
           <div className="flex-1 flex flex-col space-y-4">
+            {/* سلايدر البانرات الإعلانية المصوّرة القادمة من السحابة */}
+            {currentBanner && (
+              <div
+                style={{
+                  backgroundColor: currentBanner.bgColor || '#059669',
+                  color: currentBanner.textColor || '#ffffff',
+                }}
+                className="relative rounded-2xl overflow-hidden border border-slate-200/60 dark:border-slate-800 shadow-sm min-h-[120px] flex items-center"
+              >
+                {currentBanner.imageUrl && (
+                  <>
+                    <img
+                      src={currentBanner.imageUrl}
+                      alt={currentBanner.title}
+                      referrerPolicy="no-referrer"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-l from-black/75 via-black/45 to-black/25 pointer-events-none" />
+                  </>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleBannerAction(currentBanner)}
+                  className="relative z-10 w-full p-4 sm:p-5 text-right flex flex-col gap-1.5 cursor-pointer"
+                >
+                  {currentBanner.badgeText && (
+                    <span className="text-[11px] font-bold opacity-90">
+                      {currentBanner.badgeText}
+                    </span>
+                  )}
+                  <h3 className="text-sm sm:text-base font-black leading-snug">
+                    {currentBanner.title}
+                  </h3>
+                  {currentBanner.subtitle && (
+                    <p className="text-xs opacity-90 line-clamp-2 max-w-2xl">
+                      {currentBanner.subtitle}
+                    </p>
+                  )}
+                </button>
+
+                {activeBanners.length > 1 && (
+                  <div className="absolute left-3 bottom-3 z-20 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCarouselIndex((prev) => (prev - 1 + activeBanners.length) % activeBanners.length);
+                      }}
+                      aria-label="البانر السابق"
+                      className="p-1 rounded-lg bg-black/35 hover:bg-black/55 text-white cursor-pointer"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCarouselIndex((prev) => (prev + 1) % activeBanners.length);
+                      }}
+                      aria-label="البانر التالي"
+                      className="p-1 rounded-lg bg-black/35 hover:bg-black/55 text-white cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* عناصر وودجات أعلى قائمة الإعلانات من السحابة */}
             {inlineWidgetsByPos('above_feed').length > 0 && (
               <div className="flex flex-wrap items-center gap-2">
@@ -2458,24 +2936,54 @@ export default function App() {
               </div>
             ) : (
               <div className={`w-full grid ${gridColsClass} gap-4 sm:gap-5`}>
-                {currentCategoryItems.map((item) => (
-                  <ProductCard
-                    key={item.id}
-                    item={item}
-                    isFavorite={favoriteProductIds.includes(item.id)}
-                    onToggleFavorite={toggleFavorite}
-                    onOpenLightbox={handleOpenLightbox}
-                    onShare={handleShareProduct}
-                    fontScale={postFontScale}
-                    isFeatured={featuredProductIds.includes(item.id)}
-                    cardConfig={{
-                      ...uiConfig.cardConfig,
-                      cardBgColor: uiConfig.cardConfig?.cardBgColor || themeConfig.cardBgColor,
-                    }}
-                    verifiedBadge={themeConfig.verifiedBadge}
-                    featuredBadge={themeConfig.featuredBadge}
-                  />
-                ))}
+                {currentCategoryItems.map((item) => {
+                  const sellerBadge =
+                    resolveSellerVerificationBadge(
+                      item.user_id,
+                      Boolean(item.seller_verified),
+                      userTiers,
+                      themeConfig.verificationTiers || [],
+                      themeConfig.verifiedBadge
+                    ) || themeConfig.verifiedBadge;
+                  const canUserEdit = Boolean(
+                    marketRules.allowUserEditAd && currentUser && item.user_id === currentUser.id
+                  );
+
+                  return (
+                    <ProductCard
+                      key={item.id}
+                      item={item}
+                      isFavorite={favoriteProductIds.includes(item.id)}
+                      onToggleFavorite={toggleFavorite}
+                      onOpenLightbox={handleOpenLightbox}
+                      onShare={handleShareProduct}
+                      fontScale={postFontScale}
+                      isFeatured={activeFeaturedMap.has(item.id)}
+                      cardConfig={{
+                        ...uiConfig.cardConfig,
+                        cardBgColor: uiConfig.cardConfig?.cardBgColor || themeConfig.cardBgColor,
+                      }}
+                      verifiedBadge={sellerBadge}
+                      featuredBadge={themeConfig.featuredBadge}
+                      hideContactForGuests={marketRules.hideContactForGuests}
+                      isLoggedIn={Boolean(currentUser)}
+                      onRequireLogin={() => {
+                        setAuthModalReason('يرجى تسجيل الدخول لعرض رقم التواصل مع البائع');
+                        setAuthModalInitialMode('login');
+                        setShowAuthModal(true);
+                      }}
+                      whatsappLaunchMode={whatsappLaunchMode}
+                      canEdit={canUserEdit}
+                      onEdit={handleStartEditProduct}
+                      onTrackEvent={trackEngagementEvent}
+                      visibleSpecLabels={visibleSpecLabels}
+                      onNotify={(msg) => {
+                        setToastMessage(msg);
+                        setTimeout(() => setToastMessage(null), 2500);
+                      }}
+                    />
+                  );
+                })}
               </div>
             )}
 
@@ -2825,6 +3333,16 @@ export default function App() {
                                 <Share2 className="w-3.5 h-3.5" />
                                 <span>مشاركة</span>
                               </button>
+                              {marketRules.allowUserEditAd && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEditProduct(p)}
+                                  className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                  <span>تعديل</span>
+                                </button>
+                              )}
                             </div>
 
                             <button
@@ -3004,16 +3522,29 @@ export default function App() {
                             </div>
                             <span className="text-[10px] text-slate-400">
                               {p.category} - {p.sub_category}
+                              {isAdExpired(p.created_at, marketRules.adExpiryDays) ? ' • منتهي الصلاحية' : ''}
                             </span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setProductToDelete(p)}
-                            className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                            title="حذف الإعلان"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            {marketRules.allowUserEditAd && (
+                              <button
+                                type="button"
+                                onClick={() => handleStartEditProduct(p)}
+                                className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                                title="تعديل الإعلان"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setProductToDelete(p)}
+                              className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                              title="حذف الإعلان"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -3451,7 +3982,7 @@ export default function App() {
         title={lightboxTitle}
       />
 
-      {/* نافذة إعدادات التطبيق (المقترحات ديناميكية من السحاب) */}
+      {/* نافذة إعدادات التطبيق (المقترحات ديناميكية من السحاب مع إجراءات حقيقية) */}
       <SettingsModal
         isOpen={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
@@ -3462,6 +3993,10 @@ export default function App() {
         postFontScale={postFontScale}
         onChangePostFontScale={handleUpdatePostFontScale}
         proposals={settingsProposals}
+        whatsappLaunchMode={whatsappLaunchMode}
+        onChangeWhatsappMode={handleUpdateWhatsappMode}
+        onClearCache={handleClearAppCache}
+        myProducts={myProducts}
       />
 
       {/* تأكيد أمان إضافي كجزء أساسي من التطبيق قبل حذف أي إعلان */}
@@ -3593,9 +4128,8 @@ export default function App() {
       )}
 
       {/* الأزرار والعناصر العائمة والبنرات القادمة من السحابة ديناميكياً */}
-      {customWidgets
+      {visibleContextWidgets
         .filter((w) =>
-          w.visible !== false &&
           ['top_right', 'top_left', 'bottom_right', 'bottom_left', 'bottom_center', undefined].includes(
             w.position
           )

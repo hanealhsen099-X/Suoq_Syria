@@ -20,9 +20,28 @@ import {
   MapPin,
   Clock,
   ShieldCheck,
+  MessageCircle,
+  Sparkles,
+  Bell,
+  Gift,
+  Star,
+  Info,
 } from 'lucide-react';
+import {
+  formatPriceWithCurrency,
+  type ProductItem,
+  type SettingsProposalConfigItem,
+} from '../lib/marketplace';
 
 export type SortOrderOption = 'newest' | 'oldest' | 'price_asc' | 'price_desc';
+
+type ProposalItem = Partial<SettingsProposalConfigItem> & {
+  id: string;
+  title: string;
+  tag?: string;
+  benefits?: string;
+  icon?: React.ReactNode;
+};
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -33,46 +52,57 @@ interface SettingsModalProps {
   onChangeSortOrder: (order: SortOrderOption) => void;
   postFontScale: number;
   onChangePostFontScale: (scale: number) => void;
-  onSelectSuggestion?: (suggestionTitle: string) => void;
-  proposals?: any[];
+  proposals?: ProposalItem[];
+  whatsappLaunchMode?: 'app' | 'web';
+  onChangeWhatsappMode?: (mode: 'app' | 'web') => void;
+  onClearCache?: () => void;
+  myProducts?: ProductItem[];
 }
 
-interface NewSettingProposal {
-  id: string;
-  title: string;
-  tag: string;
-  icon: React.ReactNode;
-  description: string;
-  benefits: string;
-}
-
-// المقترحات الإضافية المتبقية لسوق سوريا
-const REMAINING_PROPOSALS: NewSettingProposal[] = [
+const DEFAULT_CLOUD_PROPOSALS: ProposalItem[] = [
   {
     id: 'whatsapp_launch_mode',
-    title: 'تحديد طريقة فتح محادثة الواتساب',
-    tag: 'تخصيص التواصل',
-    icon: <ExternalLink className="w-5 h-5 text-emerald-500" />,
-    description: 'تحديد فتح محادثة الواتساب إما عبر التطبيق المباشر (App) أو عبر المتصفح (Web).',
-    benefits: 'مفيد لمن يستخدمون أجهزة حاسوب أو أجهزة لا تحتوي تطبيق واتساب رئيسي مفعّل.',
-  },
-  {
-    id: 'clear_cache',
-    title: 'تفريغ الذاكرة المؤقتة وسجل البحث',
-    tag: 'صيانة وسرعة',
-    icon: <Trash2 className="w-5 h-5 text-rose-500" />,
-    description: 'زر سريع لمسح سجل البحث المؤقت والبيانات المخزنة محلياً بنقرة واحدة.',
-    benefits: 'يحرر ذاكرة الهاتف ويسرّع فتح التطبيق عند تراكم عمليات البحث وتصفح الصور.',
+    title: 'تفضيل تشغيل واتساب',
+    description: 'التبديل الفوري بين فتح تطبيق واتساب مباشرة أو واتساب ويب من المتصفح.',
+    badge: 'جاهز الآن',
+    iconName: 'MessageCircle',
+    enabled: true,
+    order: 1,
   },
   {
     id: 'bulk_share_ads',
-    title: 'تصدير ومشاركة كافة إعلاناتي كرابط متجر واحد',
-    tag: 'أدوات البائع',
-    icon: <Share2 className="w-5 h-5 text-purple-500" />,
-    description: 'تجميع كل المنتجات التي نشرها البائع في رابط أو نص منسق لمشاركته في المجموعات.',
-    benefits: 'يسهل على البائع نشر كتالوج بضائعه دفعة واحدة في قنوات وتطبيقات التواصل (فيسبوك، تلغرام، واتساب).',
+    title: 'نسخ ومشاركة إعلاناتي دفعة واحدة',
+    description: 'توليد قائمة منسقة بكل إعلاناتك النشطة ومشاركتها في مجموعات التلغرام والواتساب.',
+    badge: 'مفيد للبائعين',
+    iconName: 'Share2',
+    enabled: true,
+    order: 2,
+  },
+  {
+    id: 'clear_cache',
+    title: 'تنظيف الذاكرة المؤقتة للتطبيق',
+    description: 'مسح نتائج البحث القديمة وتنبيهات البث المحفوظة لتسريع التطبيق.',
+    badge: 'صيانة سريعة',
+    iconName: 'Trash2',
+    enabled: true,
+    order: 3,
   },
 ];
+
+function renderProposalIcon(iconName?: string, fallbackIcon?: React.ReactNode) {
+  if (fallbackIcon) return fallbackIcon;
+  const name = (iconName || '').toLowerCase();
+  if (name.includes('message') || name.includes('whatsapp')) return <MessageCircle className="w-5 h-5 text-emerald-500" />;
+  if (name.includes('external')) return <ExternalLink className="w-5 h-5 text-emerald-500" />;
+  if (name.includes('trash')) return <Trash2 className="w-5 h-5 text-rose-500" />;
+  if (name.includes('share')) return <Share2 className="w-5 h-5 text-purple-500" />;
+  if (name.includes('shield')) return <ShieldCheck className="w-5 h-5 text-blue-500" />;
+  if (name.includes('bell')) return <Bell className="w-5 h-5 text-amber-500" />;
+  if (name.includes('gift')) return <Gift className="w-5 h-5 text-pink-500" />;
+  if (name.includes('star')) return <Star className="w-5 h-5 text-amber-500" />;
+  if (name.includes('info')) return <Info className="w-5 h-5 text-sky-500" />;
+  return <Sparkles className="w-5 h-5 text-emerald-500" />;
+}
 
 export default function SettingsModal({
   isOpen,
@@ -83,21 +113,83 @@ export default function SettingsModal({
   onChangeSortOrder,
   postFontScale,
   onChangePostFontScale,
-  onSelectSuggestion,
   proposals = [],
+  whatsappLaunchMode = 'app',
+  onChangeWhatsappMode,
+  onClearCache,
+  myProducts = [],
 }: SettingsModalProps) {
   const [selectedSuggestions, setSelectedSuggestions] = useState<string[]>([]);
-  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleToggleSuggestion = (item: NewSettingProposal) => {
+  const showNotice = (msg: string) => {
+    setActionNotice(msg);
+    setTimeout(() => setActionNotice(null), 3200);
+  };
+
+  const activeProposals = (proposals && proposals.length > 0 ? proposals : DEFAULT_CLOUD_PROPOSALS)
+    .filter((p) => (p as SettingsProposalConfigItem).enabled !== false)
+    .sort((a, b) => ((a as SettingsProposalConfigItem).order ?? 0) - ((b as SettingsProposalConfigItem).order ?? 0));
+
+  const handleProposalAction = async (
+    item: Partial<SettingsProposalConfigItem> & { id: string; title: string }
+  ) => {
+    if (item.id === 'whatsapp_launch_mode') {
+      const nextMode: 'app' | 'web' = whatsappLaunchMode === 'app' ? 'web' : 'app';
+      onChangeWhatsappMode?.(nextMode);
+      showNotice(
+        nextMode === 'web'
+          ? 'تم التبديل إلى فتح محادثات واتساب عبر المتصفح (Web)'
+          : 'تم التبديل إلى فتح تطبيق واتساب مباشرة (App)'
+      );
+      return;
+    }
+
+    if (item.id === 'clear_cache') {
+      onClearCache?.();
+      showNotice('تم تنظيف الذاكرة المؤقتة وتحديث البيانات بنجاح');
+      return;
+    }
+
+    if (item.id === 'bulk_share_ads') {
+      const shareList = myProducts.filter((p) => p.status !== 'rejected');
+      if (shareList.length === 0) {
+        showNotice('لا توجد إعلانات منشورة في حسابك لمشاركتها حالياً');
+        return;
+      }
+      const catalogText = [
+        `متجري في سوق سوريا (${shareList.length} إعلانات):`,
+        ...shareList.map(
+          (p, i) =>
+            `${i + 1}. ${p.title} — ${p.price ? formatPriceWithCurrency(p.price) : 'حسب الاتفاق'} (${p.province})`
+        ),
+        window.location.origin,
+      ].join('\n');
+
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: 'إعلاناتي في سوق سوريا', text: catalogText });
+          showNotice(`تمت مشاركة ${shareList.length} إعلانات بنجاح`);
+          return;
+        } catch {
+          // الانتقال للنسخ
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(catalogText);
+        showNotice(`تم نسخ كتالوج إعلاناتك (${shareList.length}) إلى الحافظة بنجاح`);
+      } catch {
+        showNotice('تعذر النسخ التلقائي؛ يرجى المحاولة من متصفح آخر');
+      }
+      return;
+    }
+
     setSelectedSuggestions((prev) =>
       prev.includes(item.id) ? prev.filter((id) => id !== item.id) : [...prev, item.id]
     );
-    onSelectSuggestion?.(item.title);
-    setCopiedNotice(`تم اختيار: "${item.title}"`);
-    setTimeout(() => setCopiedNotice(null), 2500);
+    showNotice(`تم حفظ تفضيلك: "${item.title}"`);
   };
 
   const previewScale = (postFontScale || 100) / 100;
@@ -467,99 +559,100 @@ export default function SettingsModal({
             </div>
           </div>
 
-          {/* تنبيه عند الضغط على مقترح */}
-          {copiedNotice && (
-            <div className="p-2.5 bg-slate-950 text-white rounded-xl text-xs font-semibold flex items-center justify-between animate-in fade-in border border-slate-800">
-              <span className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>{copiedNotice}</span>
-              </span>
-              <span className="text-[10px] text-slate-400">قل لي وسأضيفه فوراً</span>
+          {/* تنبيه تنفيذ الإجراء */}
+          {actionNotice && (
+            <div className="p-2.5 bg-slate-950 text-white rounded-xl text-xs font-semibold flex items-center gap-2 animate-in fade-in border border-slate-800">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{actionNotice}</span>
             </div>
           )}
 
           {/* ============================================================ */}
-          {/* 4. مقترحات إعدادات إضافية قيد الاقتراح */}
+          {/* 4. أدوات وإعدادات إضافية تفاعلية من السحابة */}
           {/* ============================================================ */}
-          <div className="space-y-2 pt-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
-                مقترحات إعدادات أخرى يمكنك طلب تفعيلها
-              </span>
-              <span className="text-[10px] text-slate-400">
-                انقر على أي مقترح لإعلامي به
-              </span>
-            </div>
+          {activeProposals.length > 0 && (
+            <div className="space-y-2 pt-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                  أدوات ومزايا إضافية
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  انقر لتنفيذ الإجراء مباشرة
+                </span>
+              </div>
 
-            <div className="space-y-2.5">
-              {(proposals && proposals.length > 0 ? proposals : REMAINING_PROPOSALS).map((item) => {
-                const isSelected = selectedSuggestions.includes(item.id);
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleToggleSuggestion(item)}
-                    className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                      isSelected
-                        ? darkMode
-                          ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
-                          : 'bg-emerald-50/70 border-emerald-400 ring-1 ring-emerald-400'
-                        : darkMode
-                        ? 'bg-slate-800/40 border-slate-800 hover:border-slate-700'
-                        : 'bg-white border-slate-200/80 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2 mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                            darkMode ? 'bg-slate-850' : 'bg-slate-100'
+              <div className="space-y-2.5">
+                {activeProposals.map((item) => {
+                  const isWhatsappMode = item.id === 'whatsapp_launch_mode';
+                  const isActiveItem = isWhatsappMode
+                    ? whatsappLaunchMode === 'web'
+                    : selectedSuggestions.includes(item.id);
+                  const badgeLabel = isWhatsappMode
+                    ? whatsappLaunchMode === 'web'
+                      ? 'الوضع الحالي: ويب (Web)'
+                      : 'الوضع الحالي: التطبيق (App)'
+                    : item.badge || item.tag || 'أداة سريعة';
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleProposalAction(item)}
+                      className={`w-full text-right p-3 rounded-xl border transition-all cursor-pointer ${
+                        isActiveItem
+                          ? darkMode
+                            ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
+                            : 'bg-emerald-50/70 border-emerald-400 ring-1 ring-emerald-400'
+                          : darkMode
+                          ? 'bg-slate-800/40 border-slate-800 hover:border-slate-700'
+                          : 'bg-white border-slate-200/80 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                              darkMode ? 'bg-slate-800' : 'bg-slate-100'
+                            }`}
+                          >
+                            {renderProposalIcon(item.iconName, item.icon)}
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-xs leading-tight">{item.title}</h4>
+                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 shrink-0">
+                          {isWhatsappMode
+                            ? 'تبديل'
+                            : item.id === 'clear_cache'
+                            ? 'تنظيف'
+                            : item.id === 'bulk_share_ads'
+                            ? 'نسخ الكتالوج'
+                            : isActiveItem
+                            ? 'مفعّل'
+                            : 'تفعيل'}
+                        </span>
+                      </div>
+
+                      {item.description && (
+                        <p
+                          className={`text-[11px] leading-relaxed ${
+                            darkMode ? 'text-slate-300' : 'text-slate-600'
                           }`}
                         >
-                          {item.icon}
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-xs leading-tight">
-                            {item.title}
-                          </h4>
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                            {item.tag}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div
-                        className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${
-                          isSelected
-                            ? 'border-emerald-600 bg-emerald-600 text-white'
-                            : 'border-slate-300 dark:border-slate-600'
-                        }`}
-                      >
-                        {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
-                      </div>
-                    </div>
-
-                    <p
-                      className={`text-[11px] leading-relaxed mb-2 ${
-                        darkMode ? 'text-slate-300' : 'text-slate-600'
-                      }`}
-                    >
-                      {item.description}
-                    </p>
-
-                    <div
-                      className={`text-[10px] p-2 rounded-lg border leading-normal ${
-                        darkMode
-                          ? 'bg-slate-900/60 border-slate-800 text-slate-400'
-                          : 'bg-slate-50 border-slate-100 text-slate-500'
-                      }`}
-                    >
-                      💡 <span className="font-medium">{item.benefits}</span>
-                    </div>
-                  </div>
-                );
-              })}
+                          {item.description}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           <div
             className={`p-3 rounded-xl border text-center text-[11px] flex items-center justify-center gap-1.5 ${
@@ -569,7 +662,7 @@ export default function SettingsModal({
             }`}
           >
             <HelpCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>أي إعداد من هذه المقترحات ينال إعجابك، فقط أخبرني وسأضعه لك.</span>
+            <span>يتم مزامنة تفضيلاتك تلقائياً مع إعدادات تطبيق سوق سوريا.</span>
           </div>
         </div>
 
