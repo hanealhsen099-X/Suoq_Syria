@@ -274,6 +274,9 @@ export interface MarketRulesConfig {
   bannedKeywordAction: 'block' | 'pending_review';
   defaultSortOrder: 'newest' | 'oldest' | 'price_asc' | 'price_desc';
   defaultFontScale: 100 | 115 | 130 | 145;
+  showFontSizeSetting?: boolean;
+  showSortSetting?: boolean;
+  showMyProductsCountBadge?: boolean;
 }
 
 export const DEFAULT_MARKET_RULES: MarketRulesConfig = {
@@ -290,6 +293,9 @@ export const DEFAULT_MARKET_RULES: MarketRulesConfig = {
   bannedKeywordAction: 'block',
   defaultSortOrder: 'newest',
   defaultFontScale: 100,
+  showFontSizeSetting: true,
+  showSortSetting: true,
+  showMyProductsCountBadge: true,
 };
 
 export interface FeaturedPromotionItem {

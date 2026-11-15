@@ -15,7 +15,6 @@ import {
   ArrowUpDown,
   Share2,
   CheckCircle2,
-  HelpCircle,
   Check,
   MapPin,
   Clock,
@@ -57,6 +56,9 @@ interface SettingsModalProps {
   onChangeWhatsappMode?: (mode: 'app' | 'web') => void;
   onClearCache?: () => void;
   myProducts?: ProductItem[];
+  showFontSizeSetting?: boolean;
+  showSortSetting?: boolean;
+  hasCloudProposals?: boolean;
 }
 
 const DEFAULT_CLOUD_PROPOSALS: ProposalItem[] = [
@@ -118,6 +120,9 @@ export default function SettingsModal({
   onChangeWhatsappMode,
   onClearCache,
   myProducts = [],
+  showFontSizeSetting = true,
+  showSortSetting = true,
+  hasCloudProposals = false,
 }: SettingsModalProps) {
   const [selectedSuggestions, setSelectedSuggestions] = useState<string[]>([]);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -129,7 +134,12 @@ export default function SettingsModal({
     setTimeout(() => setActionNotice(null), 3200);
   };
 
-  const activeProposals = (proposals && proposals.length > 0 ? proposals : DEFAULT_CLOUD_PROPOSALS)
+  const proposalsSource = hasCloudProposals
+    ? proposals
+    : proposals && proposals.length > 0
+    ? proposals
+    : DEFAULT_CLOUD_PROPOSALS;
+  const activeProposals = proposalsSource
     .filter((p) => (p as SettingsProposalConfigItem).enabled !== false)
     .sort((a, b) => ((a as SettingsProposalConfigItem).order ?? 0) - ((b as SettingsProposalConfigItem).order ?? 0));
 
@@ -255,7 +265,7 @@ export default function SettingsModal({
                   darkMode ? 'text-slate-400' : 'text-slate-500'
                 }`}
               >
-                تخصيص المظهر، خط المنشورات، وترتيب العرض
+                تخصيص المظهر وتفضيلات الاستخدام
               </span>
             </div>
           </div>
@@ -332,8 +342,9 @@ export default function SettingsModal({
           </div>
 
           {/* ============================================================ */}
-          {/* 2. تكبير خط نصوص المنشورات فقط مع شريط سحب ومعاينة فورية */}
+          {/* 2. تكبير خط نصوص المنشورات فقط مع شريط سحب ومعاينة فورية (بإذن الإدارة) */}
           {/* ============================================================ */}
+          {showFontSizeSetting && (
           <div
             className={`p-3.5 rounded-xl border space-y-3 transition-all ${
               darkMode
@@ -475,10 +486,12 @@ export default function SettingsModal({
               </div>
             </div>
           </div>
+          )}
 
           {/* ============================================================ */}
-          {/* 3. فرز الإعلانات أو المنشورات حسب التاريخ أو السعر */}
+          {/* 3. فرز الإعلانات أو المنشورات حسب التاريخ أو السعر (بإذن الإدارة) */}
           {/* ============================================================ */}
+          {showSortSetting && (
           <div
             className={`p-3.5 rounded-xl border space-y-2.5 transition-all ${
               darkMode
@@ -558,6 +571,7 @@ export default function SettingsModal({
               })}
             </div>
           </div>
+          )}
 
           {/* تنبيه تنفيذ الإجراء */}
           {actionNotice && (
@@ -653,42 +667,22 @@ export default function SettingsModal({
               </div>
             </div>
           )}
-
-          <div
-            className={`p-3 rounded-xl border text-center text-[11px] flex items-center justify-center gap-1.5 ${
-              darkMode
-                ? 'bg-slate-800/40 border-slate-800 text-slate-400'
-                : 'bg-slate-50 border-slate-200 text-slate-500'
-            }`}
-          >
-            <HelpCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>يتم مزامنة تفضيلاتك تلقائياً مع إعدادات تطبيق سوق سوريا.</span>
-          </div>
         </div>
 
         {/* ذيل النافذة */}
         <div
-          className={`p-3.5 border-t flex items-center justify-between transition-colors ${
+          className={`p-3.5 border-t flex items-center justify-end transition-colors ${
             darkMode
               ? 'bg-slate-900/90 border-slate-800'
               : 'bg-slate-50/70 border-slate-100'
           }`}
         >
-          <span
-            className={`text-[11px] font-medium ${
-              darkMode ? 'text-slate-400' : 'text-slate-500'
-            }`}
-          >
-            حجم الخط: {postFontScale}% • الفرز: {
-              sortOrder === 'newest' ? 'الأحدث' : sortOrder === 'oldest' ? 'الأقدم' : sortOrder === 'price_asc' ? 'الأقل سعراً' : 'الأعلى سعراً'
-            }
-          </span>
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-xs"
+            className="px-5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-xs"
           >
-            تم / إغلاق
+            إغلاق
           </button>
         </div>
       </div>

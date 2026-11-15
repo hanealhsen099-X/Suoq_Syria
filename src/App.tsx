@@ -139,6 +139,7 @@ export default function App() {
     customButtonText?: string | null;
     customButtonUrl?: string | null;
     activeColor?: string | null;
+    features?: Record<string, boolean>;
   }
   interface CloudThemeConfig {
     primaryColor?: string;
@@ -200,6 +201,7 @@ export default function App() {
             order: d.display_order,
             badgeText: d.badge_text,
             is_primary_action: d.is_primary_action,
+            features: d.features || undefined,
           }));
           setNavItems(mapped);
         }
@@ -235,6 +237,7 @@ export default function App() {
 
   // 3. مقترحات الإعدادات قادمة من السحاب (__APP_CONFIG_SETTINGS_PROPOSALS__)
   const [settingsProposals, setSettingsProposals] = useState<any[]>([]);
+  const [hasCloudProposals, setHasCloudProposals] = useState(false);
 
   // أسعار الصرف والذهب الحية القادمة من السحابة (__APP_CONFIG_RATES__)
   const [marketRates, setMarketRates] = useState<any>(null);
@@ -513,6 +516,7 @@ export default function App() {
                 const cloudProps = JSON.parse(row.description);
                 if (Array.isArray(cloudProps)) {
                   setSettingsProposals(cloudProps);
+                  setHasCloudProposals(true);
                 }
               }
               if (row.title === '__APP_CONFIG_RATES__' && row.description) {
@@ -2492,8 +2496,11 @@ export default function App() {
   const headerCfg = uiConfig.headerLayout || {};
   const loginPos = headerCfg.loginBtnPosition || 'right';
   const notifPos = headerCfg.notificationsBtnPosition || 'left';
-  const settingsPos = headerCfg.settingsBtnPosition || 'left';
   const brandPos = headerCfg.brandPosition || 'center';
+  const myProductsNavCfg = navItems.find((n) => n.key === 'my_products');
+  const showMyProductsCountBadge =
+    marketRules.showMyProductsCountBadge !== false &&
+    myProductsNavCfg?.features?.show_ads_count_badge !== false;
 
   const renderLoginBtn = () =>
     !currentUser ? (
@@ -2555,26 +2562,6 @@ export default function App() {
       {unreadCount > 0 && (
         <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white" />
       )}
-    </button>
-  );
-
-  const renderSettingsBtn = () => (
-    <button
-      type="button"
-      onClick={() => {
-        if (!currentUser) {
-          setAuthModalReason('يرجى تسجيل الدخول أو إنشاء حساب جديد للوصول إلى إعدادات التطبيق وتخصيص تجربتك');
-          setAuthModalInitialMode('login');
-          setShowAuthModal(true);
-        } else {
-          setShowSettingsModal(true);
-        }
-      }}
-      className={`p-2 rounded-full ${darkMode ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} transition-colors cursor-pointer`}
-      aria-label="إعدادات التطبيق"
-      title="إعدادات التطبيق"
-    >
-      <Settings className="w-5 h-5" />
     </button>
   );
 
@@ -2741,7 +2728,6 @@ export default function App() {
           <div className="flex items-center gap-1.5 z-10">
             {loginPos === 'right' && renderLoginBtn()}
             {notifPos === 'right' && renderNotifBtn()}
-            {settingsPos === 'right' && renderSettingsBtn()}
             {brandPos === 'right' && (
               <div className="flex items-center gap-2">
                 {uiConfig.appLogoUrl && <img src={uiConfig.appLogoUrl} alt="" className="w-7 h-7 rounded-lg object-cover" />}
@@ -2888,7 +2874,6 @@ export default function App() {
             )}
             {loginPos === 'left' && renderLoginBtn()}
             {notifPos === 'left' && renderNotifBtn()}
-            {settingsPos === 'left' && renderSettingsBtn()}
           </div>
         </div>
       </header>
@@ -3455,9 +3440,11 @@ export default function App() {
                     <div>
                       <div className="flex items-center gap-2">
                         <h3 className="font-bold text-slate-900 text-sm">منتجاتي المنشورة</h3>
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                          {myProducts.length} إعلان
-                        </span>
+                        {showMyProductsCountBadge && (
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                            {myProducts.length} إعلان
+                          </span>
+                        )}
                       </div>
                       <span className="text-[10px] text-slate-400">
                         كافة الإعلانات النشطة على حسابك في سوق سوريا
@@ -3670,6 +3657,22 @@ export default function App() {
                 {w.badge && <span className="px-2 py-0.5 rounded-full bg-black/20 text-[10px]">{w.badge}</span>}
               </button>
             ))}
+            {/* زر إعدادات التطبيق: على اليمين بشكل أفقي وجزئي (متاح للجميع) */}
+            <div className="flex items-center justify-start">
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(true)}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-bold shadow-2xs transition-colors cursor-pointer ${
+                  darkMode
+                    ? 'bg-slate-900 border-slate-800 text-slate-100 hover:bg-slate-800'
+                    : 'bg-white border-slate-200 text-slate-800 hover:bg-slate-50'
+                }`}
+                aria-label="إعدادات التطبيق"
+              >
+                <Settings className="w-4 h-4 text-emerald-600" />
+                <span>إعدادات التطبيق</span>
+              </button>
+            </div>
             {authLoading ? (
               <div className="flex-1 flex items-center justify-center py-20">
                 <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -3841,72 +3844,6 @@ export default function App() {
                     )}
                   </div>
                 )}
-
-                {/* إعلانات المستخدم */}
-                <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs">
-                  <h4 className="font-bold text-sm text-slate-900 mb-3 pb-2 border-b border-slate-100">
-                    إعلاناتي المنشورة ({myProducts.length})
-                  </h4>
-                  {myProducts.length === 0 ? (
-                    <p className="text-xs text-slate-400 text-center py-6">
-                      لم تقم بنشر أي إعلانات حتى الآن
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {myProducts.map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-150"
-                        >
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-xs text-slate-800 block">
-                                {p.title}
-                              </span>
-                              {p.status === 'pending' ? (
-                                <span className="px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-[9px] font-bold">
-                                  قيد المراجعة
-                                </span>
-                              ) : p.status === 'rejected' ? (
-                                <span className="px-1.5 py-0.5 rounded-md bg-red-50 border border-red-200 text-red-700 text-[9px] font-bold">
-                                  مرفوض
-                                </span>
-                              ) : (
-                                <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[9px] font-bold">
-                                  معتمد
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-slate-400">
-                              {p.category} - {p.sub_category}
-                              {isAdExpired(p.created_at, marketRules.adExpiryDays) ? ' • منتهي الصلاحية' : ''}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            {marketRules.allowUserEditAd && (
-                              <button
-                                type="button"
-                                onClick={() => handleStartEditProduct(p)}
-                                className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
-                                title="تعديل الإعلان"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => setProductToDelete(p)}
-                              className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                              title="حذف الإعلان"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
               </div>
             ) : (
               /* عندما لا يكون المستخدم مسجل الدخول في صفحة أنا */
@@ -4089,7 +4026,11 @@ export default function App() {
                 }
 
                 const isActive = activeTab === item.key;
-                const badge = item.badgeText || (item.key === 'my_products' && currentUser && myProducts.length > 0 ? myProducts.length : null);
+                const badge =
+                  item.badgeText ||
+                  (item.key === 'my_products' && showMyProductsCountBadge && currentUser && myProducts.length > 0
+                    ? myProducts.length
+                    : null);
 
                 const renderNavIcon = (iconName?: string, key?: string) => {
                   const name = (iconName || key || '').toLowerCase();
@@ -4354,6 +4295,9 @@ export default function App() {
         onChangeWhatsappMode={handleUpdateWhatsappMode}
         onClearCache={handleClearAppCache}
         myProducts={myProducts}
+        showFontSizeSetting={marketRules.showFontSizeSetting !== false}
+        showSortSetting={marketRules.showSortSetting !== false}
+        hasCloudProposals={hasCloudProposals}
       />
 
       {/* نافذة منظومة المناديب والتوصيل بين المحافظات */}
