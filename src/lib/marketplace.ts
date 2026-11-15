@@ -636,3 +636,263 @@ export function resolveSellerVerificationBadge(
   return defaultVerifiedBadge;
 }
 
+// ======================================================
+// منظومة المناديب والتوصيل السحابية (Courier & Delivery)
+// ======================================================
+
+export interface CourierVehicleSizeOption {
+  id: string;
+  label: string;
+  capacityHint: string;
+}
+
+export interface CourierPaymentGatewayPrep {
+  id: string;
+  name: string;
+  enabled: boolean;
+  accountHint?: string;
+}
+
+export interface CourierPaymentPrepConfig {
+  enabled: boolean;
+  mode: 'direct_only' | 'cash_on_delivery_fee' | 'escrow_wallet' | 'commission_prepaid';
+  commissionPercent: number;
+  futureNoticeText: string;
+  supportedGateways: CourierPaymentGatewayPrep[];
+}
+
+export interface CourierServiceConfig {
+  enabled: boolean;
+  directoryButtonLabel: string;
+  directoryButtonPosition: 'header_left' | 'header_right' | 'floating' | 'hidden';
+  showDirectoryButtonInHeader: boolean;
+  showProductCardRequestButton: boolean;
+  productCardButtonLabel: string;
+  applyButtonLabel: string;
+  applyButtonPosition: 'header_right' | 'header_left' | 'account_top' | 'hidden';
+  showApplyButtonInHeader: boolean;
+  incomingRequestsButtonLabel: string;
+  defaultMaxCouriersPerProvince: number;
+  provinceQuotas: Record<string, number>;
+  provinceFullMessage: string;
+  imageMaxWidth: 800 | 1000 | 1200 | 1600;
+  imageQuality: number;
+  vehiclePhotoOptional: boolean;
+  photoClarityWarningText: string;
+  feeDisclaimerText: string;
+  vehicleSizes: CourierVehicleSizeOption[];
+  paymentPrep: CourierPaymentPrepConfig;
+}
+
+export const DEFAULT_COURIER_CONFIG: CourierServiceConfig = {
+  enabled: false,
+  directoryButtonLabel: 'اطلب مندوب',
+  directoryButtonPosition: 'header_left',
+  showDirectoryButtonInHeader: true,
+  showProductCardRequestButton: true,
+  productCardButtonLabel: 'اطلب مندوب للقطعة',
+  applyButtonLabel: 'انضم كمندوب',
+  applyButtonPosition: 'account_top',
+  showApplyButtonInHeader: true,
+  incomingRequestsButtonLabel: 'طلبات المستخدمين',
+  defaultMaxCouriersPerProvince: 50,
+  provinceQuotas: {},
+  provinceFullMessage:
+    'عذراً، تم اكتمال العدد المطلوب للمناديب في هذه المحافظة حالياً. يمكنك المحاولة لاحقاً عند فتح شواغر جديدة أو اختيار محافظة أخرى.',
+  imageMaxWidth: 1000,
+  imageQuality: 0.72,
+  vehiclePhotoOptional: true,
+  photoClarityWarningText:
+    'تنبيه هام جداً: يرجى تصوير الهوية الشخصية (الوجه الأمامي والخلفي) وصورة السيلفي وأنت تحمل الهوية بجانب وجهك في مكان مضاء وبوضوح تام دون أي تشويش أو انعكاس؛ أي صورة غير واضحة ستؤدي إلى رفض الطلب مباشرة.',
+  feeDisclaimerText:
+    'ملاحظة رسمية: التطبيق وسيط تقني للربط فقط — أجرة التوصيل ليست على التطبيق ولا يدفع التطبيق رواتب للمناديب، بل يتم الاتفاق عليها ودفعها مباشرة بين العميل (الشاري أو البائع) والمندوب ولا يتحمل التطبيق أي مسؤولية مالية.',
+  vehicleSizes: [
+    { id: 'small', label: 'دراجة نارية / قطع صغيرة', capacityHint: 'طرود خفيفة وهواتف وإكسسوارات' },
+    { id: 'medium', label: 'سيارة سياحية / قطع متوسطة', capacityHint: 'أجهزة منزلية صغيرة وشاشات' },
+    { id: 'van', label: 'فان / سوزوكي مغلق', capacityHint: 'غسالات، برادات، ألواح شمسية وأثاث متوسط' },
+    { id: 'pickup', label: 'بيك أب / شاحنة خفيفة', capacityHint: 'أثاث ومعدات كبيرة ومواد بناء' },
+    { id: 'truck', label: 'شاحنة نقل ثقيل', capacityHint: 'نقل تجاري وآليات ثقيلة بين المحافظات' },
+  ],
+  paymentPrep: {
+    enabled: false,
+    mode: 'direct_only',
+    commissionPercent: 0,
+    futureNoticeText:
+      'منظومة الدفع الإلكتروني قيد التجهيز المسبق ومعطلة حالياً — التسوية المالية تتم مباشرة بين العميل والمندوب.',
+    supportedGateways: [],
+  },
+};
+
+export type CourierApplicationStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+export interface CourierApplicationItem {
+  id: string;
+  userId: string;
+  fullName: string;
+  nationalId: string;
+  phone: string;
+  province: string;
+  areaDetails?: string;
+  vehicleSizeId: string;
+  vehicleNameModel: string;
+  vehiclePhotoUrl?: string;
+  idFrontPhotoUrl: string;
+  idBackPhotoUrl: string;
+  selfieWithIdPhotoUrl: string;
+  acceptedPaymentNote?: string;
+  feeNote?: string;
+  status: CourierApplicationStatus;
+  rejectionReason?: string;
+  isOnline: boolean;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface CourierDeliveryRequest {
+  id: string;
+  courierId: string;
+  courierUserId: string;
+  courierName: string;
+  requesterUserId?: string | null;
+  requesterName: string;
+  requesterPhone: string;
+  productId?: string | null;
+  productTitle?: string | null;
+  pickupProvince: string;
+  dropoffProvince: string;
+  detailedAddress: string;
+  itemDescription: string;
+  vehicleSizeId: string;
+  feePayer: 'buyer' | 'seller' | 'split';
+  feeAgreementMode: 'direct_negotiation' | 'proposed_amount';
+  proposedFeeAmount?: string;
+  paymentPreparedRef?: string;
+  status: 'new' | 'accepted' | 'declined' | 'completed';
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export function getProvinceCourierQuota(
+  config: CourierServiceConfig,
+  province: string
+): number {
+  if (province && config.provinceQuotas && typeof config.provinceQuotas[province] === 'number') {
+    return Math.max(0, Math.floor(config.provinceQuotas[province]));
+  }
+  return Math.max(0, Math.floor(config.defaultMaxCouriersPerProvince ?? 50));
+}
+
+export function getApprovedCouriersCountForProvince(
+  applications: CourierApplicationItem[],
+  province: string
+): number {
+  if (!province) return 0;
+  return (applications || []).filter(
+    (app) => app.status === 'approved' && app.province === province
+  ).length;
+}
+
+export function canApplyAsCourierInProvince(
+  applications: CourierApplicationItem[],
+  config: CourierServiceConfig,
+  province: string
+): {
+  allowed: boolean;
+  approvedCount: number;
+  maxQuota: number;
+  message?: string;
+} {
+  const maxQuota = getProvinceCourierQuota(config, province);
+  const approvedCount = getApprovedCouriersCountForProvince(applications, province);
+  if (maxQuota === 0 || approvedCount >= maxQuota) {
+    return {
+      allowed: false,
+      approvedCount,
+      maxQuota,
+      message:
+        config.provinceFullMessage ||
+        'عذراً، تم اكتمال العدد المطلوب للمناديب في هذه المحافظة حالياً.',
+    };
+  }
+  return {
+    allowed: true,
+    approvedCount,
+    maxQuota,
+  };
+}
+
+export function filterActiveCouriers(
+  applications: CourierApplicationItem[],
+  filters: {
+    province?: string;
+    vehicleSizeId?: string;
+    searchQuery?: string;
+  } = {}
+): CourierApplicationItem[] {
+  const query = (filters.searchQuery || '').trim().toLowerCase();
+  return (applications || []).filter((app) => {
+    if (app.status !== 'approved' || !app.isOnline) return false;
+    if (filters.province && filters.province !== 'الكل' && app.province !== filters.province) {
+      return false;
+    }
+    if (filters.vehicleSizeId && filters.vehicleSizeId !== 'all' && app.vehicleSizeId !== filters.vehicleSizeId) {
+      return false;
+    }
+    if (query) {
+      const hay = `${app.fullName} ${app.province} ${app.areaDetails || ''} ${app.vehicleNameModel}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+}
+
+export function validateCourierApplicationInput(
+  input: {
+    fullName: string;
+    nationalId: string;
+    phone: string;
+    province: string;
+    vehicleSizeId: string;
+    vehicleNameModel: string;
+    vehiclePhotoUrl?: string;
+    idFrontPhotoUrl: string;
+    idBackPhotoUrl: string;
+    selfieWithIdPhotoUrl: string;
+  },
+  config: CourierServiceConfig
+): { valid: boolean; error?: string } {
+  if (!input.fullName || input.fullName.trim().length < 3) {
+    return { valid: false, error: 'يرجى إدخال الاسم الكامل بشكل صحيح.' };
+  }
+  if (!isValidSyrianNationalId(input.nationalId || '')) {
+    return { valid: false, error: 'يجب إدخال الرقم الوطني السوري الصحيح (11 رقماً).' };
+  }
+  const cleanPhone = (input.phone || '').replace(/[^0-9+]/g, '');
+  if (cleanPhone.length < 9) {
+    return { valid: false, error: 'يرجى إدخال رقم هاتف / واتساب صحيح للتواصل.' };
+  }
+  if (!input.province || !input.province.trim()) {
+    return { valid: false, error: 'يرجى اختيار المحافظة التي تعمل بها.' };
+  }
+  if (!input.vehicleSizeId || !input.vehicleNameModel || input.vehicleNameModel.trim().length < 2) {
+    return { valid: false, error: 'يرجى تحديد حجم المركبة وكتابة اسمها/نوعها.' };
+  }
+  if (!config.vehiclePhotoOptional && !input.vehiclePhotoUrl?.trim()) {
+    return { valid: false, error: 'يرجى إرفاق صورة المركبة.' };
+  }
+  if (!input.idFrontPhotoUrl?.trim() || !input.idBackPhotoUrl?.trim()) {
+    return {
+      valid: false,
+      error: 'يرجى إرفاق صورتي الهوية الشخصية (الوجه الأمامي والوجه الخلفي) بوضوح.',
+    };
+  }
+  if (!input.selfieWithIdPhotoUrl?.trim()) {
+    return {
+      valid: false,
+      error: 'يرجى إرفاق صورة سيلفي واحدة واضحة وأنت تحمل الهوية بجانب وجهك.',
+    };
+  }
+  return { valid: true };
+}
+
+

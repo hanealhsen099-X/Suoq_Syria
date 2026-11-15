@@ -18,6 +18,7 @@ import {
   X,
   Lock,
   Pencil,
+  Truck,
 } from 'lucide-react';
 import {
   ProductItem,
@@ -107,6 +108,9 @@ interface ProductCardProps {
   onTrackEvent?: (productId: string, event: 'view' | 'whatsapp' | 'call') => void;
   visibleSpecLabels?: string[];
   onNotify?: (msg: string) => void;
+  showCourierRequestBtn?: boolean;
+  courierButtonLabel?: string;
+  onRequestCourier?: (item: ProductItem) => void;
 }
 
 export default function ProductCard({
@@ -129,6 +133,9 @@ export default function ProductCard({
   onTrackEvent,
   visibleSpecLabels,
   onNotify,
+  showCourierRequestBtn = false,
+  courierButtonLabel,
+  onRequestCourier,
 }: ProductCardProps) {
   const images = parseProductImages(item.image_url);
   const scale = (fontScale || 100) / 100;
@@ -612,6 +619,20 @@ export default function ProductCard({
           </>
         )}
       </div>
+      )}
+
+      {/* 4.5. زر طلب مندوب للقطعة (متحكم به من الإدارة عبر السحابة) */}
+      {showCourierRequestBtn && onRequestCourier && (
+        <div className="px-3.5 py-1.5 border-t border-slate-100 dark:border-slate-800 bg-sky-50/40 dark:bg-sky-950/20">
+          <button
+            type="button"
+            onClick={() => onRequestCourier(item)}
+            className="w-full py-1.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-2xs transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <Truck className="w-3.5 h-3.5 shrink-0" />
+            <span>{courierButtonLabel || 'اطلب مندوب للقطعة'}</span>
+          </button>
+        </div>
       )}
 
       {/* 5. الشريط التفاعلي أسفل الإعلان */}

@@ -55,6 +55,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
+  Truck,
+  Inbox,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { uploadImageToSupabase, compressImage } from './lib/storage';
@@ -67,6 +69,7 @@ import {
   formatWhatsappUrl,
   formatDirectCallUrl,
   DEFAULT_MARKET_RULES,
+  DEFAULT_COURIER_CONFIG,
   filterCustomFieldsByCategory,
   encodeCustomSpecsIntoDescription,
   extractCustomSpecsFromDescription,
@@ -85,6 +88,9 @@ import {
   type VerificationTier,
   type EngagementStatsMap,
   type CloudFieldItem,
+  type CourierServiceConfig,
+  type CourierApplicationItem,
+  type CourierDeliveryRequest,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
 import ProductCard, {
@@ -93,6 +99,7 @@ import ProductCard, {
 } from './components/ProductCard';
 import ImageLightboxModal from './components/ImageLightboxModal';
 import SettingsModal, { type SortOrderOption } from './components/SettingsModal';
+import CourierSystemModal, { type CourierModalMode } from './components/CourierSystemModal';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 interface AdminNotification {
@@ -671,6 +678,31 @@ export default function App() {
                   setUserTiers(cloudUserTiers);
                 }
               }
+              if (row.title === '__APP_CONFIG_COURIER_CONFIG__' && row.description) {
+                const cloudCourier = JSON.parse(row.description);
+                if (cloudCourier && typeof cloudCourier === 'object') {
+                  setCourierConfig({
+                    ...DEFAULT_COURIER_CONFIG,
+                    ...cloudCourier,
+                    paymentPrep: {
+                      ...DEFAULT_COURIER_CONFIG.paymentPrep,
+                      ...(cloudCourier.paymentPrep || {}),
+                    },
+                  });
+                }
+              }
+              if (row.title === '__APP_CONFIG_COURIER_APPLICATIONS__' && row.description) {
+                const cloudCourierApps = JSON.parse(row.description);
+                if (Array.isArray(cloudCourierApps)) {
+                  setCourierApplications(cloudCourierApps);
+                }
+              }
+              if (row.title === '__APP_CONFIG_COURIER_REQUESTS__' && row.description) {
+                const cloudCourierReqs = JSON.parse(row.description);
+                if (Array.isArray(cloudCourierReqs)) {
+                  setCourierRequests(cloudCourierReqs);
+                }
+              }
             } catch (e) {}
           });
         }
@@ -863,6 +895,14 @@ export default function App() {
     signupFields?: any[];
     postProductFields?: CloudFieldItem[];
   } | null>(null);
+
+  // منظومة المناديب والتوصيل بين المحافظات (تستقبل بالكامل من السحابة)
+  const [courierConfig, setCourierConfig] = useState<CourierServiceConfig>(DEFAULT_COURIER_CONFIG);
+  const [courierApplications, setCourierApplications] = useState<CourierApplicationItem[]>([]);
+  const [courierRequests, setCourierRequests] = useState<CourierDeliveryRequest[]>([]);
+  const [courierModalOpen, setCourierModalOpen] = useState(false);
+  const [courierModalMode, setCourierModalMode] = useState<CourierModalMode>('directory');
+  const [courierTargetProduct, setCourierTargetProduct] = useState<ProductItem | null>(null);
 
   // سياسة الخصوصية الديناميكية المعتمدة من الإدارة
   const [privacyPolicyConfig, setPrivacyPolicyConfig] = useState<{
@@ -1272,6 +1312,140 @@ export default function App() {
     },
     []
   );
+
+  // اشتقاق حساب المندوب والطلبات الواردة للمستخدم الحالي
+  const myCourierApp = useMemo(() => {
+    if (!currentUser?.id) return null;
+    return courierApplications.find((a) => a.userId === currentUser.id) || null;
+  }, [courierApplications, currentUser?.id]);
+
+  const myUnreadCourierRequestsCount = useMemo(() => {
+    if (!myCourierApp || myCourierApp.status !== 'approved' || !currentUser?.id) return 0;
+    return courierRequests.filter(
+      (r) =>
+        (r.courierId === myCourierApp.id || r.courierUserId === currentUser.id) &&
+        r.status === 'new'
+    ).length;
+  }, [courierRequests, myCourierApp, currentUser?.id]);
+
+  const openCourierModal = (mode: CourierModalMode, product?: ProductItem | null) => {
+    setCourierTargetProduct(product || null);
+    setCourierModalMode(mode);
+    setCourierModalOpen(true);
+  };
+
+  const upsertCourierArrayCloudRecord = async <T,>(
+    configKey: '__APP_CONFIG_COURIER_APPLICATIONS__' | '__APP_CONFIG_COURIER_REQUESTS__',
+    subCategory: string,
+    mergeFn: (latest: T[]) => T[]
+  ): Promise<T[]> => {
+    const { data: existingRows, error: fetchErr } = await supabase
+      .from('products')
+      .select('id, description, created_at')
+      .eq('title', configKey)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (fetchErr) throw fetchErr;
+    const latestRow = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+
+    let currentList: T[] = [];
+    if (latestRow?.description) {
+      try {
+        const parsed = JSON.parse(latestRow.description);
+        if (Array.isArray(parsed)) currentList = parsed as T[];
+      } catch {}
+    }
+
+    const updatedList = mergeFn(currentList);
+    const serialized = JSON.stringify(updatedList);
+
+    if (latestRow?.id) {
+      const { error: updErr } = await supabase
+        .from('products')
+        .update({ description: serialized })
+        .eq('id', latestRow.id);
+      if (updErr) throw updErr;
+    } else {
+      const { error: insErr } = await supabase.from('products').insert([
+        {
+          title: configKey,
+          category: '__SYSTEM_CONFIG__',
+          sub_category: subCategory,
+          province: 'دمشق',
+          location: 'system',
+          whatsapp: '0000000000',
+          status: 'approved',
+          description: serialized,
+        },
+      ]);
+      if (insErr) throw insErr;
+    }
+
+    return updatedList;
+  };
+
+  const handleSubmitCourierApplication = async (newApp: CourierApplicationItem) => {
+    const nextApps = await upsertCourierArrayCloudRecord<CourierApplicationItem>(
+      '__APP_CONFIG_COURIER_APPLICATIONS__',
+      'courier_applications',
+      (latest) => [newApp, ...latest.filter((item) => item.userId !== newApp.userId)]
+    );
+    setCourierApplications(nextApps);
+    setCourierModalOpen(false);
+    setToastMessage('تم إرسال طلب الانضمام كمندوب وهو قيد المراجعة والاعتماد من الإدارة');
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const handleToggleCourierOnline = async () => {
+    if (!myCourierApp || myCourierApp.status !== 'approved') return;
+    const nextOnline = !myCourierApp.isOnline;
+    const nextApps = await upsertCourierArrayCloudRecord<CourierApplicationItem>(
+      '__APP_CONFIG_COURIER_APPLICATIONS__',
+      'courier_applications',
+      (latest) =>
+        latest.map((item) =>
+          item.id === myCourierApp.id || item.userId === myCourierApp.userId
+            ? { ...item, isOnline: nextOnline }
+            : item
+        )
+    );
+    setCourierApplications(nextApps);
+    setToastMessage(
+      nextOnline
+        ? 'تم تفعيل وضع الاستعداد — اسمك ظاهر الآن للعملاء لطلب التوصيل'
+        : 'تم إيقاف وضع الاستعداد مؤقتاً — لن تستقبل طلبات جديدة حتى تعاود التفعيل'
+    );
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleSubmitCourierRequest = async (req: CourierDeliveryRequest) => {
+    const nextReqs = await upsertCourierArrayCloudRecord<CourierDeliveryRequest>(
+      '__APP_CONFIG_COURIER_REQUESTS__',
+      'courier_requests',
+      (latest) => [req, ...latest]
+    );
+    setCourierRequests(nextReqs);
+    setToastMessage(`تم إرسال طلب التوصيل إلى المندوب (${req.courierName}) بنجاح`);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const handleUpdateCourierRequestStatus = async (
+    reqId: string,
+    nextStatus: CourierDeliveryRequest['status']
+  ) => {
+    const nextReqs = await upsertCourierArrayCloudRecord<CourierDeliveryRequest>(
+      '__APP_CONFIG_COURIER_REQUESTS__',
+      'courier_requests',
+      (latest) =>
+        latest.map((item) =>
+          item.id === reqId ? { ...item, status: nextStatus, updatedAt: new Date().toISOString() } : item
+        )
+    );
+    setCourierRequests(nextReqs);
+    setToastMessage('تم تحديث حالة طلب التوصيل بنجاح');
+    setTimeout(() => setToastMessage(null), 2500);
+  };
 
   // بدء تعديل إعلان قائم وتعبئة حقوله الحالية
   const handleStartEditProduct = (item: ProductItem) => {
@@ -2577,6 +2751,45 @@ export default function App() {
                 </div>
               </div>
             )}
+            {courierConfig.enabled &&
+              courierConfig.showDirectoryButtonInHeader &&
+              courierConfig.directoryButtonPosition === 'header_right' && (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('directory', null)}
+                  className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.directoryButtonLabel || 'اطلب مندوب'}</span>
+                </button>
+              )}
+            {courierConfig.enabled &&
+              courierConfig.showApplyButtonInHeader &&
+              courierConfig.applyButtonPosition === 'header_right' &&
+              (myCourierApp?.status === 'approved' ? (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('inbox', null)}
+                  className="relative px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Inbox className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.incomingRequestsButtonLabel || 'طلبات المستخدمين'}</span>
+                  {myUnreadCourierRequestsCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[9px] font-black">
+                      {myUnreadCourierRequestsCount}
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('apply', null)}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.applyButtonLabel || 'انضم كمندوب'}</span>
+                </button>
+              ))}
             {inlineWidgetsByPos('header_right').map((w) => (
               <button
                 key={w.id}
@@ -2616,6 +2829,45 @@ export default function App() {
 
           {/* يسار الترويسة */}
           <div className="flex items-center gap-1 z-10">
+            {courierConfig.enabled &&
+              courierConfig.showDirectoryButtonInHeader &&
+              courierConfig.directoryButtonPosition === 'header_left' && (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('directory', null)}
+                  className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.directoryButtonLabel || 'اطلب مندوب'}</span>
+                </button>
+              )}
+            {courierConfig.enabled &&
+              courierConfig.showApplyButtonInHeader &&
+              courierConfig.applyButtonPosition === 'header_left' &&
+              (myCourierApp?.status === 'approved' ? (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('inbox', null)}
+                  className="relative px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Inbox className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.incomingRequestsButtonLabel || 'طلبات المستخدمين'}</span>
+                  {myUnreadCourierRequestsCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[9px] font-black">
+                      {myUnreadCourierRequestsCount}
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => openCourierModal('apply', null)}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{courierConfig.applyButtonLabel || 'انضم كمندوب'}</span>
+                </button>
+              ))}
             {inlineWidgetsByPos('header_left').map((w) => (
               <button
                 key={w.id}
@@ -2977,6 +3229,9 @@ export default function App() {
                       onEdit={handleStartEditProduct}
                       onTrackEvent={trackEngagementEvent}
                       visibleSpecLabels={visibleSpecLabels}
+                      showCourierRequestBtn={courierConfig.enabled && courierConfig.showProductCardRequestButton}
+                      courierButtonLabel={courierConfig.productCardButtonLabel}
+                      onRequestCourier={(prod) => openCourierModal('directory', prod)}
                       onNotify={(msg) => {
                         setToastMessage(msg);
                         setTimeout(() => setToastMessage(null), 2500);
@@ -3484,6 +3739,108 @@ export default function App() {
                     <span>تسجيل الخروج</span>
                   </button>
                 </div>
+
+                {/* لوحة المندوب وتوصيل الطلبات بين المحافظات */}
+                {courierConfig.enabled && (
+                  <div className={`rounded-2xl p-4 border shadow-2xs space-y-3 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                          <Truck className="w-5 h-5" />
+                        </div>
+                        <div className="text-right">
+                          <h4 className="font-bold text-xs text-slate-900 dark:text-slate-100">
+                            خدمة المناديب والتوصيل بين المحافظات
+                          </h4>
+                          <p className="text-[10px] text-slate-400">
+                            {myCourierApp?.status === 'approved'
+                              ? `حساب مندوب معتمد • ${myCourierApp.province} (${myCourierApp.vehicleNameModel})`
+                              : myCourierApp?.status === 'pending'
+                              ? 'طلبك قيد المراجعة لدى الإدارة بانتظار الاعتماد'
+                              : myCourierApp?.status === 'rejected'
+                              ? 'تم رفض طلبك السابق — يمكنك التعديل وإعادة الإرسال'
+                              : myCourierApp?.status === 'suspended'
+                              ? 'حساب المندوب الخاص بك موقوف مؤقتاً من الإدارة'
+                              : 'انضم كمندوب معتمد أو اطلب توصيل قطعة'}
+                          </p>
+                        </div>
+                      </div>
+                      {myCourierApp?.status === 'approved' && (
+                        <button
+                          type="button"
+                          onClick={handleToggleCourierOnline}
+                          className={`px-3 py-1.5 rounded-xl text-[11px] font-bold border transition-all cursor-pointer shrink-0 ${
+                            myCourierApp.isOnline
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                              : 'bg-slate-100 border-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {myCourierApp.isOnline ? 'متاح الآن' : 'غير متاح'}
+                        </button>
+                      )}
+                    </div>
+
+                    {myCourierApp?.status === 'approved' ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openCourierModal('inbox', null)}
+                          className="flex-1 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                        >
+                          <Inbox className="w-4 h-4" />
+                          <span>{courierConfig.incomingRequestsButtonLabel || 'طلبات المستخدمين'}</span>
+                          {myUnreadCourierRequestsCount > 0 && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black">
+                              {myUnreadCourierRequestsCount}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openCourierModal('directory', null)}
+                          className="py-2 px-3 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 font-bold text-xs cursor-pointer"
+                        >
+                          {courierConfig.directoryButtonLabel || 'اطلب مندوب'}
+                        </button>
+                      </div>
+                    ) : myCourierApp?.status === 'pending' ? (
+                      <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold flex items-center gap-2">
+                        <Clock className="w-4 h-4 shrink-0" />
+                        <span>طلب التوظيف قيد المراجعة حالياً — ستظهر لوحة «{courierConfig.incomingRequestsButtonLabel || 'طلبات المستخدمين'}» فور موافقة الإدارة.</span>
+                      </div>
+                    ) : myCourierApp?.status === 'rejected' ? (
+                      <div className="space-y-2">
+                        {myCourierApp.rejectionReason && (
+                          <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-semibold">
+                            سبب الرفض: {myCourierApp.rejectionReason}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openCourierModal('apply', null)}
+                          className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer"
+                        >
+                          إعادة التقديم كمندوب
+                        </button>
+                      </div>
+                    ) : myCourierApp?.status === 'suspended' ? (
+                      <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-semibold">
+                        حساب المندوب موقوف مؤقتاً. تواصل مع الإدارة لمزيد من التفاصيل.
+                      </div>
+                    ) : (
+                      courierConfig.applyButtonPosition !== 'hidden' && (
+                        <button
+                          type="button"
+                          onClick={() => openCourierModal('apply', null)}
+                          className="w-full py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Truck className="w-4 h-4" />
+                          <span>{courierConfig.applyButtonLabel || 'انضم كمندوب'}</span>
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
 
                 {/* إعلانات المستخدم */}
                 <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs">
@@ -3999,6 +4356,50 @@ export default function App() {
         myProducts={myProducts}
       />
 
+      {/* نافذة منظومة المناديب والتوصيل بين المحافظات */}
+      <CourierSystemModal
+        isOpen={courierModalOpen}
+        mode={courierModalMode}
+        onClose={() => setCourierModalOpen(false)}
+        config={courierConfig}
+        provinces={provincesData}
+        applications={courierApplications}
+        requests={courierRequests}
+        currentUserId={currentUser?.id || null}
+        currentUserName={
+          currentUserProfile?.full_name ||
+          currentUser?.user_metadata?.full_name ||
+          ''
+        }
+        currentUserNationalId={
+          currentUserProfile?.national_id ||
+          currentUser?.user_metadata?.national_id ||
+          ''
+        }
+        currentUserPhone={
+          currentUser?.user_metadata?.phone ||
+          currentUser?.user_metadata?.whatsapp ||
+          ''
+        }
+        currentUserProvince={
+          currentUserProfile?.province ||
+          currentUser?.user_metadata?.province ||
+          ''
+        }
+        targetProduct={courierTargetProduct}
+        myApplication={myCourierApp}
+        whatsappLaunchMode={whatsappLaunchMode}
+        onRequireLogin={() => {
+          setCourierModalOpen(false);
+          setAuthModalReason('يرجى تسجيل الدخول للمتابعة في خدمة المناديب');
+          setAuthModalInitialMode('login');
+          setShowAuthModal(true);
+        }}
+        onSubmitApplication={handleSubmitCourierApplication}
+        onSubmitDeliveryRequest={handleSubmitCourierRequest}
+        onUpdateRequestStatus={handleUpdateCourierRequestStatus}
+      />
+
       {/* تأكيد أمان إضافي كجزء أساسي من التطبيق قبل حذف أي إعلان */}
       {productToDelete && (
         <div
@@ -4176,6 +4577,22 @@ export default function App() {
             </motion.button>
           );
         })}
+
+      {/* زر عائم لطلب مندوب توصيل عند اختيار الموضع العائم من الإدارة */}
+      {courierConfig.enabled && courierConfig.directoryButtonPosition === 'floating' && (
+        <motion.button
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          type="button"
+          onClick={() => openCourierModal('directory', null)}
+          className="fixed bottom-24 right-4 z-40 px-3.5 py-2.5 rounded-2xl shadow-xl bg-sky-600 hover:bg-sky-700 text-white border border-sky-400/40 flex items-center gap-2 text-xs font-bold cursor-pointer select-none"
+        >
+          <Truck className="w-4 h-4 shrink-0" />
+          <span>{courierConfig.directoryButtonLabel || 'اطلب مندوب'}</span>
+        </motion.button>
+      )}
 
       {/* نافذة منبثقة ديناميكية للودجات والأزرار السحابية (modal) */}
       {activeCloudModal && (

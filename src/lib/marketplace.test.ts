@@ -9,6 +9,11 @@ import {
   parseProductImages,
   serializeProductImages,
   formatTimeAgo,
+  canApplyAsCourierInProvince,
+  filterActiveCouriers,
+  validateCourierApplicationInput,
+  DEFAULT_COURIER_CONFIG,
+  type CourierApplicationItem,
   ProductItem,
 } from './marketplace';
 
@@ -127,3 +132,113 @@ test('formatTimeAgo gives friendly Arabic duration', () => {
   const justNow = formatTimeAgo(new Date().toISOString());
   assert.equal(justNow, 'الآن');
 });
+
+const sampleCourierApps: CourierApplicationItem[] = [
+  {
+    id: 'c1',
+    userId: 'u1',
+    fullName: 'أحمد العلي',
+    nationalId: '01010123456',
+    phone: '0911111111',
+    province: 'دير الزور',
+    vehicleSizeId: 'medium',
+    vehicleNameModel: 'كيا سيراتو',
+    idFrontPhotoUrl: 'front1',
+    idBackPhotoUrl: 'back1',
+    selfieWithIdPhotoUrl: 'selfie1',
+    status: 'approved',
+    isOnline: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'c2',
+    userId: 'u2',
+    fullName: 'سامي الحسن',
+    nationalId: '02020223456',
+    phone: '0922222222',
+    province: 'دير الزور',
+    vehicleSizeId: 'van',
+    vehicleNameModel: 'سوزوكي فان',
+    idFrontPhotoUrl: 'front2',
+    idBackPhotoUrl: 'back2',
+    selfieWithIdPhotoUrl: 'selfie2',
+    status: 'approved',
+    isOnline: false,
+    createdAt: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'c3',
+    userId: 'u3',
+    fullName: 'رامي محمد',
+    nationalId: '03030323456',
+    phone: '0933333333',
+    province: 'دير الزور',
+    vehicleSizeId: 'small',
+    vehicleNameModel: 'دراجة نارية',
+    idFrontPhotoUrl: 'front3',
+    idBackPhotoUrl: 'back3',
+    selfieWithIdPhotoUrl: 'selfie3',
+    status: 'pending',
+    isOnline: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  },
+];
+
+test('canApplyAsCourierInProvince enforces per-province quota across approved couriers', () => {
+  const cfg = {
+    ...DEFAULT_COURIER_CONFIG,
+    provinceQuotas: { 'دير الزور': 2, 'حلب': 50 },
+  };
+  const deirCheck = canApplyAsCourierInProvince(sampleCourierApps, cfg, 'دير الزور');
+  assert.equal(deirCheck.allowed, false);
+  assert.equal(deirCheck.approvedCount, 2);
+  assert.equal(deirCheck.maxQuota, 2);
+
+  const aleppoCheck = canApplyAsCourierInProvince(sampleCourierApps, cfg, 'حلب');
+  assert.equal(aleppoCheck.allowed, true);
+  assert.equal(aleppoCheck.approvedCount, 0);
+});
+
+test('filterActiveCouriers returns only approved and online couriers matching province/size', () => {
+  const onlineOnly = filterActiveCouriers(sampleCourierApps);
+  assert.equal(onlineOnly.length, 1);
+  assert.equal(onlineOnly[0].id, 'c1');
+
+  const sizeMismatch = filterActiveCouriers(sampleCourierApps, { vehicleSizeId: 'truck' });
+  assert.equal(sizeMismatch.length, 0);
+});
+
+test('validateCourierApplicationInput requires 3 ID photos and allows optional vehicle photo', () => {
+  const validWithoutVehiclePhoto = validateCourierApplicationInput(
+    {
+      fullName: 'طارق صالح',
+      nationalId: '04040412345',
+      phone: '0944556677',
+      province: 'حلب',
+      vehicleSizeId: 'medium',
+      vehicleNameModel: 'كيا ريو 2014',
+      idFrontPhotoUrl: 'https://cdn.example/front.jpg',
+      idBackPhotoUrl: 'https://cdn.example/back.jpg',
+      selfieWithIdPhotoUrl: 'https://cdn.example/selfie.jpg',
+    },
+    DEFAULT_COURIER_CONFIG
+  );
+  assert.equal(validWithoutVehiclePhoto.valid, true);
+
+  const missingSelfie = validateCourierApplicationInput(
+    {
+      fullName: 'طارق صالح',
+      nationalId: '04040412345',
+      phone: '0944556677',
+      province: 'حلب',
+      vehicleSizeId: 'medium',
+      vehicleNameModel: 'كيا ريو 2014',
+      idFrontPhotoUrl: 'https://cdn.example/front.jpg',
+      idBackPhotoUrl: 'https://cdn.example/back.jpg',
+      selfieWithIdPhotoUrl: '',
+    },
+    DEFAULT_COURIER_CONFIG
+  );
+  assert.equal(missingSelfie.valid, false);
+});
+
