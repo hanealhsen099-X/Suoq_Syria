@@ -13,7 +13,17 @@ import {
   filterActiveCouriers,
   validateCourierApplicationInput,
   DEFAULT_COURIER_CONFIG,
+  DEFAULT_MARKET_RULES,
+  DEFAULT_WALLET_CONFIG,
+  applyWelcomeBonusIfEligible,
+  activateMerchantPlanForWallet,
+  isUserVerificationActive,
+  canAcceptNewMerchantSubscription,
+  getUserPostingEntitlement,
+  spendWalletPoints,
+  buildExpiryInAppNotification,
   type CourierApplicationItem,
+  type UserWalletRecord,
   ProductItem,
 } from './marketplace';
 
@@ -241,4 +251,152 @@ test('validateCourierApplicationInput requires 3 ID photos and allows optional v
   );
   assert.equal(missingSelfie.valid, false);
 });
+
+test('applyWelcomeBonusIfEligible grants bonus once and prevents duplicate national IDs', () => {
+  const now = Date.parse('2026-06-01T12:00:00Z');
+  const first = applyWelcomeBonusIfEligible(
+    {},
+    'u1',
+    '01010123456',
+    DEFAULT_WALLET_CONFIG,
+    now
+  );
+  assert.equal(first.granted, true);
+  assert.equal(first.pointsGranted, 15);
+  assert.equal(first.updated.u1.points, 15);
+
+  const secondSameUser = applyWelcomeBonusIfEligible(
+    first.updated,
+    'u1',
+    '01010123456',
+    DEFAULT_WALLET_CONFIG,
+    now + 1000
+  );
+  assert.equal(secondSameUser.granted, false);
+
+  const duplicateNationalId = applyWelcomeBonusIfEligible(
+    first.updated,
+    'u2',
+    '01010123456',
+    DEFAULT_WALLET_CONFIG,
+    now + 2000
+  );
+  assert.equal(duplicateNationalId.granted, false);
+});
+
+test('activateMerchantPlanForWallet sets timed verification and enforces merchant quota', () => {
+  const now = Date.parse('2026-06-01T00:00:00Z');
+  const wallets: Record<string, UserWalletRecord> = {
+    u1: {
+      userId: 'u1',
+      points: 100,
+      starCreditsRemaining: 0,
+      updatedAt: new Date(now).toISOString(),
+      transactions: [],
+    },
+  };
+
+  const activation = activateMerchantPlanForWallet(
+    wallets,
+    'u1',
+    {
+      id: 'merchant_1m',
+      title: 'تاجر موثق شهري',
+      durationDays: 30,
+      tierId: 'golden_store',
+      maxImagesPerAd: 6,
+      maxDailyAds: 10,
+      includedStarBoosts: 2,
+    },
+    60,
+    'plan_purchase',
+    now
+  );
+
+  assert.equal(activation.ok, true);
+  assert.equal(activation.updated.u1.points, 40);
+  assert.equal(activation.updated.u1.starCreditsRemaining, 2);
+
+  // Active before expiry, expired after 31 days
+  assert.equal(isUserVerificationActive(activation.updated.u1, true, now + 5 * 86400000).active, true);
+  assert.equal(isUserVerificationActive(activation.updated.u1, true, now + 31 * 86400000).active, false);
+
+  // Quota check: max 1 merchant allows u1 renewal but blocks u2
+  const renewCheck = canAcceptNewMerchantSubscription(activation.updated, 1, 'u1', now);
+  assert.equal(renewCheck.allowed, true);
+  const newUserCheck = canAcceptNewMerchantSubscription(activation.updated, 1, 'u2', now);
+  assert.equal(newUserCheck.allowed, false);
+});
+
+test('getUserPostingEntitlement distinguishes free launch vs paid mode & point deductions', () => {
+  const now = Date.parse('2026-06-01T12:00:00Z');
+  const todayProducts = [{ user_id: 'free_user', created_at: new Date(now - 3600_000).toISOString() }];
+
+  // Free launch mode (walletConfig.enabled === false)
+  const freeLaunch = getUserPostingEntitlement({
+    walletConfig: { ...DEFAULT_WALLET_CONFIG, enabled: false },
+    marketRules: DEFAULT_MARKET_RULES,
+    wallet: undefined,
+    isVerified: false,
+    products: todayProducts,
+    userId: 'free_user',
+    nowMs: now,
+  });
+  assert.equal(freeLaunch.isPaidMode, false);
+  assert.equal(freeLaunch.canPostNewAd, true);
+
+  // Paid mode enabled: free user hit 1 daily ad limit
+  const paidFreeUser = getUserPostingEntitlement({
+    walletConfig: { ...DEFAULT_WALLET_CONFIG, enabled: true, freeMaxImagesPerAd: 1, freeMaxDailyAds: 1 },
+    marketRules: DEFAULT_MARKET_RULES,
+    wallet: undefined,
+    isVerified: false,
+    products: todayProducts,
+    userId: 'free_user',
+    nowMs: now,
+  });
+  assert.equal(paidFreeUser.isPaidMode, true);
+  assert.equal(paidFreeUser.maxImagesAllowed, 1);
+  assert.equal(paidFreeUser.canPostNewAd, false);
+
+  const spendOk = spendWalletPoints(
+    {
+      free_user: {
+        userId: 'free_user',
+        points: 20,
+        updatedAt: new Date(now).toISOString(),
+        transactions: [],
+      },
+    },
+    'free_user',
+    15,
+    'extra_ad',
+    'فتح إعلان إضافي'
+  );
+  assert.equal(spendOk.ok, true);
+  assert.equal(spendOk.updated.free_user.points, 5);
+});
+
+test('buildExpiryInAppNotification emits quiet bell reminder within 3 days of expiry', () => {
+  const now = Date.parse('2026-06-01T00:00:00Z');
+  const wallet2DaysLeft: UserWalletRecord = {
+    userId: 'u1',
+    points: 0,
+    verifiedUntil: new Date(now + 2 * 86400000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+    transactions: [],
+  };
+  const wallet10DaysLeft: UserWalletRecord = {
+    ...wallet2DaysLeft,
+    verifiedUntil: new Date(now + 10 * 86400000).toISOString(),
+  };
+
+  const notifSoon = buildExpiryInAppNotification(wallet2DaysLeft, DEFAULT_WALLET_CONFIG, now);
+  assert.ok(notifSoon !== null);
+  assert.ok(notifSoon.message.includes('2 يوم'));
+
+  const notifLater = buildExpiryInAppNotification(wallet10DaysLeft, DEFAULT_WALLET_CONFIG, now);
+  assert.equal(notifLater, null);
+});
+
 

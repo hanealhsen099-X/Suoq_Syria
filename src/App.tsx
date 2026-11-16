@@ -57,6 +57,8 @@ import {
   Pencil,
   Truck,
   Inbox,
+  Wallet,
+  Crown,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { uploadImageToSupabase, compressImage } from './lib/storage';
@@ -70,17 +72,25 @@ import {
   formatDirectCallUrl,
   DEFAULT_MARKET_RULES,
   DEFAULT_COURIER_CONFIG,
+  DEFAULT_WALLET_CONFIG,
   filterCustomFieldsByCategory,
   encodeCustomSpecsIntoDescription,
   extractCustomSpecsFromDescription,
   checkBannedKeywords,
   isAdExpired,
-  canUserPostToday,
   filterWidgetsByContext,
   filterActiveBanners,
   getActiveFeaturedMap,
   resolveSellerVerificationBadge,
   sortMarketplaceProducts,
+  ensureUserWalletRecord,
+  isUserVerificationActive,
+  canAcceptNewMerchantSubscription,
+  applyWelcomeBonusIfEligible,
+  spendWalletPoints,
+  activateMerchantPlanForWallet,
+  getUserPostingEntitlement,
+  buildExpiryInAppNotification,
   type ProductItem,
   type MarketRulesConfig,
   type PromotionalBannerSlide,
@@ -91,6 +101,11 @@ import {
   type CourierServiceConfig,
   type CourierApplicationItem,
   type CourierDeliveryRequest,
+  type WalletMonetizationConfig,
+  type UserWalletRecord,
+  type WalletPaymentRequest,
+  type MerchantSubscriptionPlan,
+  type StarFeaturePlan,
 } from './lib/marketplace';
 import AuthModal from './components/AuthModal';
 import ProductCard, {
@@ -100,6 +115,7 @@ import ProductCard, {
 import ImageLightboxModal from './components/ImageLightboxModal';
 import SettingsModal, { type SortOrderOption } from './components/SettingsModal';
 import CourierSystemModal, { type CourierModalMode } from './components/CourierSystemModal';
+import WalletModal from './components/WalletModal';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 interface AdminNotification {
@@ -707,9 +723,31 @@ export default function App() {
                   setCourierRequests(cloudCourierReqs);
                 }
               }
+              if (row.title === '__APP_CONFIG_WALLET_CONFIG__' && row.description) {
+                const cloudWalletCfg = JSON.parse(row.description);
+                if (cloudWalletCfg && typeof cloudWalletCfg === 'object') {
+                  setWalletConfig({
+                    ...DEFAULT_WALLET_CONFIG,
+                    ...cloudWalletCfg,
+                  });
+                }
+              }
+              if (row.title === '__APP_CONFIG_USER_WALLETS__' && row.description) {
+                const cloudWallets = JSON.parse(row.description);
+                if (cloudWallets && typeof cloudWallets === 'object' && !Array.isArray(cloudWallets)) {
+                  setUserWallets(cloudWallets as Record<string, UserWalletRecord>);
+                }
+              }
+              if (row.title === '__APP_CONFIG_PAYMENT_REQUESTS__' && row.description) {
+                const cloudPayReqs = JSON.parse(row.description);
+                if (Array.isArray(cloudPayReqs)) {
+                  setPaymentRequests(cloudPayReqs as WalletPaymentRequest[]);
+                }
+              }
             } catch (e) {}
           });
         }
+        setWalletCloudLoaded(true);
       });
   };
 
@@ -907,6 +945,18 @@ export default function App() {
   const [courierModalOpen, setCourierModalOpen] = useState(false);
   const [courierModalMode, setCourierModalMode] = useState<CourierModalMode>('directory');
   const [courierTargetProduct, setCourierTargetProduct] = useState<ProductItem | null>(null);
+
+  // منظومة المحفظة والنقاط واشتراكات التجار ونجوم الصدارة (من السحابة)
+  const [walletConfig, setWalletConfig] = useState<WalletMonetizationConfig>(DEFAULT_WALLET_CONFIG);
+  const [userWallets, setUserWallets] = useState<Record<string, UserWalletRecord>>({});
+  const [paymentRequests, setPaymentRequests] = useState<WalletPaymentRequest[]>([]);
+  const [walletCloudLoaded, setWalletCloudLoaded] = useState(false);
+  const [walletModalOpen, setWalletModalOpen] = useState(false);
+  const [walletModalTab, setWalletModalTab] = useState<'overview' | 'packages' | 'plans'>('overview');
+  const [starBoostProduct, setStarBoostProduct] = useState<ProductItem | null>(null);
+  const [isApplyingStarBoost, setIsApplyingStarBoost] = useState(false);
+  const [sessionUnlockedExtraImages, setSessionUnlockedExtraImages] = useState(0);
+  const [sessionUnlockedExtraPost, setSessionUnlockedExtraPost] = useState(false);
 
   // سياسة الخصوصية الديناميكية المعتمدة من الإدارة
   const [privacyPolicyConfig, setPrivacyPolicyConfig] = useState<{
@@ -1451,6 +1501,336 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 2500);
   };
 
+  // حفظ وتحديث مستندات سحابة المحفظة والطلبات والتمييز بصيغة قراءة-تعديل-حفظ آمنة
+  const upsertCloudJsonConfig = async <T,>(
+    configKey:
+      | '__APP_CONFIG_USER_WALLETS__'
+      | '__APP_CONFIG_PAYMENT_REQUESTS__'
+      | '__APP_CONFIG_FEATURED__'
+      | '__APP_CONFIG_FEATURED_META__',
+    subCategory: string,
+    defaultValue: T,
+    mergeFn: (latest: T) => T
+  ): Promise<T> => {
+    const { data: existingRows, error: fetchErr } = await supabase
+      .from('products')
+      .select('id, description, created_at')
+      .eq('title', configKey)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (fetchErr) throw fetchErr;
+    const latestRow = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+
+    let currentVal: T = defaultValue;
+    if (latestRow?.description) {
+      try {
+        currentVal = JSON.parse(latestRow.description) as T;
+      } catch {}
+    }
+
+    const updatedVal = mergeFn(currentVal);
+    const serialized = JSON.stringify(updatedVal);
+
+    if (latestRow?.id) {
+      const { error: updErr } = await supabase
+        .from('products')
+        .update({ description: serialized })
+        .eq('id', latestRow.id);
+      if (updErr) throw updErr;
+    } else {
+      const { error: insErr } = await supabase.from('products').insert([
+        {
+          title: configKey,
+          category: '__SYSTEM_CONFIG__',
+          sub_category: subCategory,
+          province: 'دمشق',
+          location: 'system',
+          whatsapp: '0000000000',
+          status: 'approved',
+          description: serialized,
+        },
+      ]);
+      if (insErr) throw insErr;
+    }
+
+    return updatedVal;
+  };
+
+  const currentUserWallet = useMemo(
+    () => (currentUser?.id ? ensureUserWalletRecord(userWallets, currentUser.id) : ensureUserWalletRecord({}, 'guest')),
+    [userWallets, currentUser?.id]
+  );
+
+  // منح نقاط الهدية الترحيبية لمرة واحدة للمستخدمين الجدد (مع التحقق من الرقم الوطني لمنع التكرار)
+  const welcomeCheckedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!walletCloudLoaded || !currentUser?.id) return;
+    if (!walletConfig.welcomeBonusEnabled || walletConfig.welcomeBonusPoints <= 0) return;
+    if (welcomeCheckedRef.current === currentUser.id) return;
+
+    const existingWallet = userWallets[currentUser.id];
+    if (existingWallet?.welcomeBonusClaimed) {
+      welcomeCheckedRef.current = currentUser.id;
+      return;
+    }
+
+    const nationalId =
+      currentUserProfile?.national_id || currentUser.user_metadata?.national_id || undefined;
+    const bonusCheck = applyWelcomeBonusIfEligible(
+      userWallets,
+      currentUser.id,
+      nationalId,
+      walletConfig
+    );
+
+    if (!bonusCheck.granted) {
+      welcomeCheckedRef.current = currentUser.id;
+      return;
+    }
+
+    welcomeCheckedRef.current = currentUser.id;
+    upsertCloudJsonConfig<Record<string, UserWalletRecord>>(
+      '__APP_CONFIG_USER_WALLETS__',
+      'user_wallets',
+      {},
+      (latest) => applyWelcomeBonusIfEligible(latest, currentUser.id, nationalId, walletConfig).updated
+    )
+      .then((saved) => {
+        setUserWallets(saved);
+        if (walletConfig.showWalletButtonInHeader || walletConfig.enabled) {
+          setToastMessage(`🎉 تمت إضافة ${bonusCheck.pointsGranted} نقطة هدية ترحيبية إلى محفظتك!`);
+          setTimeout(() => setToastMessage(null), 4000);
+        }
+      })
+      .catch(() => {});
+  }, [
+    walletCloudLoaded,
+    currentUser?.id,
+    currentUserProfile?.national_id,
+    walletConfig.welcomeBonusEnabled,
+    walletConfig.welcomeBonusPoints,
+  ]);
+
+  const handleSubmitWalletPaymentRequest = async (req: WalletPaymentRequest) => {
+    const nextReqs = await upsertCloudJsonConfig<WalletPaymentRequest[]>(
+      '__APP_CONFIG_PAYMENT_REQUESTS__',
+      'payment_requests',
+      [],
+      (latest) => [req, ...(Array.isArray(latest) ? latest : [])]
+    );
+    setPaymentRequests(nextReqs);
+    setToastMessage('تم إرسال طلب التحويل عبر شام كاش بنجاح وبانتظار تأكيد الإدارة');
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const handlePurchaseMerchantPlanWithPoints = async (
+    plan: MerchantSubscriptionPlan
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!currentUser?.id) {
+      return { ok: false, error: 'يرجى تسجيل الدخول أولاً' };
+    }
+    const quota = canAcceptNewMerchantSubscription(
+      userWallets,
+      walletConfig.maxSubscribedMerchants || 0,
+      currentUser.id
+    );
+    if (!quota.allowed) {
+      return {
+        ok: false,
+        error: `عذراً، اكتمل الحد الأقصى للتجار المشتركين حالياً (${quota.maxQuota} تاجر).`,
+      };
+    }
+
+    let resultError: string | undefined;
+    let activated = false;
+    const savedWallets = await upsertCloudJsonConfig<Record<string, UserWalletRecord>>(
+      '__APP_CONFIG_USER_WALLETS__',
+      'user_wallets',
+      {},
+      (latest) => {
+        const res = activateMerchantPlanForWallet(
+          latest || {},
+          currentUser.id,
+          plan,
+          plan.pointsCost,
+          'plan_purchase'
+        );
+        if (!res.ok) {
+          resultError = res.error;
+          return latest;
+        }
+        activated = true;
+        return res.updated;
+      }
+    );
+
+    if (!activated) {
+      return { ok: false, error: resultError || 'رصيد النقاط غير كافٍ' };
+    }
+
+    setUserWallets(savedWallets);
+    setToastMessage(`تم تفعيل باقة «${plan.title}» وتوثيق حسابك لمدة ${plan.durationDays} يوم!`);
+    setTimeout(() => setToastMessage(null), 4000);
+    return { ok: true };
+  };
+
+  const handleApplyStarBoostToProduct = async (product: ProductItem, plan: StarFeaturePlan) => {
+    if (!currentUser?.id || isApplyingStarBoost) return;
+    setIsApplyingStarBoost(true);
+    try {
+      const currentWallet = ensureUserWalletRecord(userWallets, currentUser.id);
+      const useFreeCredit = (currentWallet.starCreditsRemaining || 0) > 0;
+      if (!useFreeCredit && currentWallet.points < plan.pointsCost) {
+        setToastMessage(
+          `رصيدك (${currentWallet.points} نقطة) غير كافٍ لتمييز الإعلان (${plan.pointsCost} نقطة).`
+        );
+        setTimeout(() => setToastMessage(null), 3500);
+        return;
+      }
+
+      const nextWallets = await upsertCloudJsonConfig<Record<string, UserWalletRecord>>(
+        '__APP_CONFIG_USER_WALLETS__',
+        'user_wallets',
+        {},
+        (latest) => {
+          const w = ensureUserWalletRecord(latest || {}, currentUser.id);
+          if ((w.starCreditsRemaining || 0) > 0) {
+            const nowIso = new Date().toISOString();
+            return {
+              ...latest,
+              [currentUser.id]: {
+                ...w,
+                starCreditsRemaining: Math.max(0, (w.starCreditsRemaining || 0) - 1),
+                updatedAt: nowIso,
+                transactions: [
+                  {
+                    id: `tx_star_credit_${Date.now()}`,
+                    type: 'star_boost' as const,
+                    amount: 0,
+                    title: `استخدام رصيد نجمة مجاني (${plan.title})`,
+                    note: `إعلان: ${product.title}`,
+                    createdAt: nowIso,
+                  },
+                  ...w.transactions,
+                ].slice(0, 60),
+              },
+            };
+          }
+          const spendRes = spendWalletPoints(
+            latest || {},
+            currentUser.id,
+            plan.pointsCost,
+            'star_boost',
+            `تمييز إعلان بنجمة (${plan.title})`,
+            product.title
+          );
+          return spendRes.ok ? spendRes.updated : latest;
+        }
+      );
+
+      const expiresAtIso = new Date(
+        Date.now() + Math.max(1, plan.durationDays) * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const nextFeaturedIds = await upsertCloudJsonConfig<string[]>(
+        '__APP_CONFIG_FEATURED__',
+        'featured_ids',
+        [],
+        (latest) => Array.from(new Set([...(Array.isArray(latest) ? latest : []), product.id]))
+      );
+
+      const nextFeaturedMeta = await upsertCloudJsonConfig<FeaturedPromotionItem[]>(
+        '__APP_CONFIG_FEATURED_META__',
+        'featured_meta',
+        [],
+        (latest) => {
+          const list = Array.isArray(latest) ? latest.filter((x) => x.productId !== product.id) : [];
+          return [
+            {
+              productId: product.id,
+              priority: plan.priority || 80,
+              expiresAt: expiresAtIso,
+              note: plan.badgeText || plan.title,
+            },
+            ...list,
+          ];
+        }
+      );
+
+      setUserWallets(nextWallets);
+      setFeaturedProductIds(nextFeaturedIds);
+      setFeaturedMeta(nextFeaturedMeta);
+      setStarBoostProduct(null);
+      setToastMessage(`⭐ تم تمييز إعلانك وتثبيته في الصدارة لمدة ${plan.durationDays} يوم!`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } catch {
+      setToastMessage('تعذر تمييز الإعلان حالياً، حاول مرة أخرى');
+      setTimeout(() => setToastMessage(null), 3000);
+    } finally {
+      setIsApplyingStarBoost(false);
+    }
+  };
+
+  const handleUnlockExtraImageSlot = async () => {
+    if (!currentUser?.id) return;
+    const cost = Math.max(1, walletConfig.extraImagePointCost || 5);
+    if (currentUserWallet.points < cost) {
+      setToastMessage(`تحتاج إلى ${cost} نقطة لفتح صورة إضافية — يمكنك شحن المحفظة أولاً`);
+      setTimeout(() => setToastMessage(null), 3000);
+      setWalletModalTab('packages');
+      setWalletModalOpen(true);
+      return;
+    }
+    const nextWallets = await upsertCloudJsonConfig<Record<string, UserWalletRecord>>(
+      '__APP_CONFIG_USER_WALLETS__',
+      'user_wallets',
+      {},
+      (latest) =>
+        spendWalletPoints(
+          latest || {},
+          currentUser.id,
+          cost,
+          'extra_image',
+          'إضافة صورة إضافية للإعلان'
+        ).updated
+    );
+    setUserWallets(nextWallets);
+    setSessionUnlockedExtraImages((prev) => prev + 1);
+    setToastMessage(`تم خصم ${cost} نقطة وإتاحة إضافة صورة جديدة ✓`);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  const handleUnlockExtraDailyAd = async () => {
+    if (!currentUser?.id) return;
+    const cost = Math.max(1, walletConfig.extraDailyAdPointCost || 15);
+    if (currentUserWallet.points < cost) {
+      setToastMessage(`تحتاج إلى ${cost} نقطة لنشر إعلان إضافي اليوم — اشحن محفظتك أولاً`);
+      setTimeout(() => setToastMessage(null), 3000);
+      setWalletModalTab('packages');
+      setWalletModalOpen(true);
+      return;
+    }
+    const nextWallets = await upsertCloudJsonConfig<Record<string, UserWalletRecord>>(
+      '__APP_CONFIG_USER_WALLETS__',
+      'user_wallets',
+      {},
+      (latest) =>
+        spendWalletPoints(
+          latest || {},
+          currentUser.id,
+          cost,
+          'extra_ad',
+          'فتح إعلان يومي إضافي'
+        ).updated
+    );
+    setUserWallets(nextWallets);
+    setSessionUnlockedExtraPost(true);
+    setPublishError(null);
+    setToastMessage(`تم خصم ${cost} نقطة — يمكنك الآن متابعة نشر إعلانك!`);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
   // بدء تعديل إعلان قائم وتعبئة حقوله الحالية
   const handleStartEditProduct = (item: ProductItem) => {
     if (!marketRules.allowUserEditAd) {
@@ -1493,11 +1873,41 @@ export default function App() {
     setShowCreateScreen(true);
   };
 
+  // اشتقاق صلاحيات النشر وحدود الصور وفق خطة المستخدم أو الباقة المجانية
+  const currentUserVerificationState = useMemo(() => {
+    const baseVerified = Boolean(
+      currentUserProfile?.is_verified ||
+        (currentUser?.id && (verifiedUserIds.includes(currentUser.id) || userTiers[currentUser.id]))
+    );
+    return isUserVerificationActive(currentUser?.id ? userWallets[currentUser.id] : undefined, baseVerified);
+  }, [currentUser?.id, currentUserProfile?.is_verified, verifiedUserIds, userTiers, userWallets]);
+
+  const isCurrentUserVerified = currentUserVerificationState.active;
+
+  const postingEntitlement = useMemo(
+    () =>
+      getUserPostingEntitlement({
+        walletConfig,
+        marketRules,
+        wallet: currentUser?.id ? userWallets[currentUser.id] : undefined,
+        isVerified: isCurrentUserVerified,
+        products,
+        userId: currentUser?.id || '',
+      }),
+    [walletConfig, marketRules, userWallets, currentUser?.id, isCurrentUserVerified, products]
+  );
+
+  const effectiveMaxImagesPerAd = Math.max(
+    1,
+    postingEntitlement.maxImagesAllowed + sessionUnlockedExtraImages
+  );
+  const effectiveCanPostNewAd = postingEntitlement.canPostNewAd || sessionUnlockedExtraPost;
+
   // اختيار وإرفاق صور المنتج وفق الحد الأقصى ودقة الضغط القادمة من السحابة
   const handleMultiImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    const maxImgs = Math.max(1, marketRules.maxImagesPerAd || 3);
+    const maxImgs = effectiveMaxImagesPerAd;
     const remainingSlots = maxImgs - productImages.length;
     if (remainingSlots <= 0) return;
     const allowedFiles = files.slice(0, remainingSlots);
@@ -1530,12 +1940,6 @@ export default function App() {
     setProductImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // معالجة ونشر أو تعديل الإعلان فعلياً إلى السحابة
-  const isCurrentUserVerified = Boolean(
-    currentUserProfile?.is_verified ||
-      (currentUser?.id && (verifiedUserIds.includes(currentUser.id) || userTiers[currentUser.id]))
-  );
-
   const isCurrentUserBanned = Boolean(
     currentUserProfile?.is_banned &&
       (!currentUserProfile?.banned_until || new Date(currentUserProfile.banned_until).getTime() > Date.now())
@@ -1552,14 +1956,11 @@ export default function App() {
     }
 
     // التحقق من الحد اليومي للنشر للمستخدم عند إنشاء إعلان جديد
-    if (!editingProduct && currentUser?.id && marketRules.maxDailyAdsPerUser > 0) {
-      const quota = canUserPostToday(products, currentUser.id, marketRules.maxDailyAdsPerUser);
-      if (!quota.allowed) {
-        setPublishError(
-          `عذراً، لقد بلغت الحد اليومي المسموح للنشر (${quota.limit} إعلانات خلال 24 ساعة).`
-        );
-        return;
-      }
+    if (!editingProduct && currentUser?.id && !effectiveCanPostNewAd) {
+      setPublishError(
+        `بلغت الحد اليومي المتاح (${postingEntitlement.maxDailyAdsAllowed} إعلان). يمكنك فتح إعلان إضافي بالنقاط أو الترقية لباقة التاجر.`
+      );
+      return;
     }
 
     // التحقق الديناميكي الذكي من الحقول الإلزامية حسب إعدادات السحابة
@@ -1624,7 +2025,7 @@ export default function App() {
 
     try {
       let finalImageUrl = '';
-      const maxImgs = Math.max(1, marketRules.maxImagesPerAd || 3);
+      const maxImgs = effectiveMaxImagesPerAd;
       const maxDim = marketRules.imageMaxWidth || 1200;
       const quality = marketRules.imageQuality || 0.78;
 
@@ -1739,6 +2140,8 @@ export default function App() {
         setPublishSuccess(false);
         setIsPublishing(false);
         setEditingProduct(null);
+        setSessionUnlockedExtraImages(0);
+        setSessionUnlockedExtraPost(false);
         setProductName('');
         setProductSubCategory('');
         setSelectedProvince('');
@@ -1762,19 +2165,37 @@ export default function App() {
     }
   };
 
-  // دمج شارة التوثيق لحظياً مع جميع الإعلانات فور تحديث قائمة الموثقين أو رتب التوثيق في السحابة
+  // دمج رتب التوثيق من الإدارة مع رتب باقات التجار النشطة
+  const effectiveUserTiers = useMemo(() => {
+    const merged: Record<string, string> = { ...userTiers };
+    for (const [uid, wallet] of Object.entries(userWallets)) {
+      if (wallet?.tierId && isUserVerificationActive(wallet, false).active) {
+        merged[uid] = wallet.tierId;
+      }
+    }
+    return merged;
+  }, [userTiers, userWallets]);
+
+  // دمج شارة التوثيق لحظياً مع مراعاة انتهاء مدة التوثيق الزمنية
   const productsWithVerification = useMemo(() => {
-    return products.map((item) => ({
-      ...item,
-      seller_verified: Boolean(
+    return products.map((item) => {
+      const baseVerified = Boolean(
         item.seller_verified ||
           (item.user_id &&
             (verifiedUserIds.includes(item.user_id) ||
               profileVerifiedMap[item.user_id] ||
-              userTiers[item.user_id]))
-      ),
-    }));
-  }, [products, verifiedUserIds, profileVerifiedMap, userTiers]);
+              effectiveUserTiers[item.user_id]))
+      );
+      const verState = isUserVerificationActive(
+        item.user_id ? userWallets[item.user_id] : undefined,
+        baseVerified
+      );
+      return {
+        ...item,
+        seller_verified: verState.active,
+      };
+    });
+  }, [products, verifiedUserIds, profileVerifiedMap, effectiveUserTiers, userWallets]);
 
   // خريطة الإعلانات المميزة VIP النشطة حالياً (مع استبعاد المنتهية صلاحيتها وترتيب الأولوية)
   const activeFeaturedMap = useMemo(
@@ -1939,7 +2360,39 @@ export default function App() {
     }
   };
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
+  // دمج تنبيه قرب انتهاء الاشتراك/التوثيق (قبل 3 أيام) ونتائج طلبات شام كاش بصمت داخل جرس الإشعارات
+  const mergedNotifications = useMemo(() => {
+    const extra: AdminNotification[] = [];
+    if (currentUser?.id) {
+      const expiryAlert = buildExpiryInAppNotification(currentUserWallet, walletConfig);
+      if (expiryAlert) {
+        extra.push(expiryAlert);
+      }
+      const userReqs = paymentRequests
+        .filter((r) => r.userId === currentUser.id && (r.status === 'approved' || r.status === 'rejected'))
+        .slice(0, 5);
+      for (const req of userReqs) {
+        extra.push({
+          id: `payreq_notif_${req.id}_${req.status}`,
+          title:
+            req.status === 'approved'
+              ? `تم اعتماد طلب ${req.targetTitle} ✓`
+              : `تحديث حول طلب ${req.targetTitle}`,
+          message:
+            req.status === 'approved'
+              ? req.requestType === 'package_recharge'
+                ? `تمت إضافة ${req.pointsToCredit} نقطة إلى محفظتك بنجاح.`
+                : `تم تفعيل باقة التاجر وتوثيق حسابك بنجاح.`
+              : `تم رفض الطلب${req.rejectionReason ? `: ${req.rejectionReason}` : '.'}`,
+          created_at: req.reviewedAt || req.createdAt,
+          is_read: false,
+        });
+      }
+    }
+    return [...extra, ...notifications];
+  }, [notifications, currentUser?.id, currentUserWallet, walletConfig, paymentRequests]);
+
+  const unreadCount = mergedNotifications.filter((n) => !n.is_read).length;
 
   const handleSelectCategory = (catName: string) => {
     setActiveCategoryName(catName);
@@ -1998,6 +2451,8 @@ export default function App() {
                 setShowCreateScreen(false);
                 setEditingProduct(null);
                 setPublishError(null);
+                setSessionUnlockedExtraImages(0);
+                setSessionUnlockedExtraPost(false);
               }}
               className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer p-1"
             >
@@ -2066,15 +2521,48 @@ export default function App() {
                 </div>
               )}
 
+              {/* تنبيه وحد الإعلانات اليومي عند تفعيل نظام الدفع */}
+              {!editingProduct && walletConfig.enabled && !effectiveCanPostNewAd && (
+                <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2 font-bold">
+                    <Coins className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      لقد وصلت إلى الحد المجاني اليومي ({postingEntitlement.maxDailyAdsAllowed} إعلان). رصيدك الحالي: {currentUserWallet.points} نقطة.
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {postingEntitlement.extraDailyAdPointCost > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleUnlockExtraDailyAd}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] cursor-pointer"
+                      >
+                        فتح إعلان إضافي بـ {postingEntitlement.extraDailyAdPointCost} نقطة
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWalletModalTab('plans');
+                        setWalletModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] cursor-pointer"
+                    >
+                      ترقية لباقة التاجر الموثق
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 1. صور المنتج أو الإعلان */}
               {isPostFieldVisible('images', true) && (
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
-                      صور المنتج أو الإعلان (حتى {marketRules.maxImagesPerAd || 3} صور كحد أقصى) {isPostFieldRequired('images', false) && <span className="text-rose-500">*</span>}
+                      صور المنتج أو الإعلان (حتى {effectiveMaxImagesPerAd} صور كحد أقصى) {isPostFieldRequired('images', false) && <span className="text-rose-500">*</span>}
                     </label>
                     <span className="text-[11px] text-slate-500 font-medium">
-                      {productImages.length} من {marketRules.maxImagesPerAd || 3} صور
+                      {productImages.length} من {effectiveMaxImagesPerAd} صور
                     </span>
                   </div>
 
@@ -2115,7 +2603,7 @@ export default function App() {
                           </div>
                         ))}
 
-                        {productImages.length < (marketRules.maxImagesPerAd || 3) && (
+                        {productImages.length < effectiveMaxImagesPerAd && (
                           <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
@@ -2123,10 +2611,27 @@ export default function App() {
                           >
                             <Plus className="w-5 h-5" />
                             <span className="text-[10px] font-bold">إضافة صورة</span>
-                            <span className="text-[9px] text-slate-400">({(marketRules.maxImagesPerAd || 3) - productImages.length} متبقية)</span>
+                            <span className="text-[9px] text-slate-400">({effectiveMaxImagesPerAd - productImages.length} متبقية)</span>
                           </button>
                         )}
                       </div>
+
+                      {walletConfig.enabled &&
+                        productImages.length >= effectiveMaxImagesPerAd &&
+                        postingEntitlement.extraImagePointCost > 0 && (
+                          <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2 text-xs">
+                            <span className="text-amber-800 dark:text-amber-200 font-semibold">
+                              هل تحتاج صورة إضافية؟ (رصيدك: {currentUserWallet.points} نقطة)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleUnlockExtraImageSlot}
+                              className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold shrink-0 cursor-pointer"
+                            >
+                              +1 صورة بـ {postingEntitlement.extraImagePointCost} نقطة
+                            </button>
+                          </div>
+                        )}
 
                       <p className="text-[11px] text-slate-400 leading-normal">
                         * تظهر الصور للمشاهدين مجمّعة في بطاقة واحدة كمنشورات التواصل، مع إمكانية النقر والتكبير.
@@ -2141,7 +2646,7 @@ export default function App() {
                       <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 shadow-xs flex items-center justify-center text-slate-400">
                         <ImageIcon className="w-5 h-5" />
                       </div>
-                      <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى {marketRules.maxImagesPerAd || 3} صور)</span>
+                      <span className="text-xs font-bold">اضغط لإرفاق صور للمنتج (حتى {effectiveMaxImagesPerAd} صور)</span>
                       <span className="text-[10px] text-slate-400">PNG, JPG (يتم ضغطها تلقائياً قبل الرفع)</span>
                     </button>
                   )}
@@ -2565,11 +3070,33 @@ export default function App() {
     </button>
   );
 
+  const renderWalletBtn = () =>
+    walletConfig.showWalletButtonInHeader ? (
+      <button
+        type="button"
+        onClick={() => {
+          setWalletModalTab('overview');
+          setWalletModalOpen(true);
+        }}
+        className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+        aria-label={walletConfig.walletButtonLabel || 'محفظتي'}
+        title={walletConfig.walletButtonLabel || 'محفظتي'}
+      >
+        <Wallet className="w-3.5 h-3.5" />
+        <span>{walletConfig.walletButtonLabel || 'محفظتي'}</span>
+        {currentUser && (
+          <span className="px-1.5 py-0.2 rounded-md bg-black/20 text-[10px] font-black">
+            {currentUserWallet.points}
+          </span>
+        )}
+      </button>
+    ) : null;
+
   const vBadgeCfg =
     resolveSellerVerificationBadge(
       currentUser?.id,
       isCurrentUserVerified,
-      userTiers,
+      effectiveUserTiers,
       themeConfig.verificationTiers || [],
       themeConfig.verifiedBadge
     ) || themeConfig.verifiedBadge;
@@ -2728,6 +3255,7 @@ export default function App() {
           <div className="flex items-center gap-1.5 z-10">
             {loginPos === 'right' && renderLoginBtn()}
             {notifPos === 'right' && renderNotifBtn()}
+            {walletConfig.walletButtonPosition === 'right' && renderWalletBtn()}
             {brandPos === 'right' && (
               <div className="flex items-center gap-2">
                 {uiConfig.appLogoUrl && <img src={uiConfig.appLogoUrl} alt="" className="w-7 h-7 rounded-lg object-cover" />}
@@ -2872,6 +3400,7 @@ export default function App() {
                 <span className="text-base font-bold">{uiConfig.appNameAr || 'سوق سوريا'}</span>
               </div>
             )}
+            {walletConfig.walletButtonPosition !== 'right' && renderWalletBtn()}
             {loginPos === 'left' && renderLoginBtn()}
             {notifPos === 'left' && renderNotifBtn()}
           </div>
@@ -3178,7 +3707,7 @@ export default function App() {
                     resolveSellerVerificationBadge(
                       item.user_id,
                       Boolean(item.seller_verified),
-                      userTiers,
+                      effectiveUserTiers,
                       themeConfig.verificationTiers || [],
                       themeConfig.verifiedBadge
                     ) || themeConfig.verifiedBadge;
@@ -3555,8 +4084,8 @@ export default function App() {
                           </div>
 
                           {/* شريط الإجراءات لإعلان البائع */}
-                          <div className="bg-slate-50/70 border-t border-slate-100 px-3.5 py-2 flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2">
+                          <div className="bg-slate-50/70 border-t border-slate-100 px-3.5 py-2 flex items-center justify-between flex-wrap gap-2 text-xs">
+                            <div className="flex items-center gap-2 flex-wrap">
                               {pImages.length > 0 && (
                                 <button
                                   type="button"
@@ -3584,6 +4113,23 @@ export default function App() {
                                   <Pencil className="w-3.5 h-3.5" />
                                   <span>تعديل</span>
                                 </button>
+                              )}
+                              {walletConfig.enabled && (
+                                activeFeaturedMap.has(p.id) ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
+                                    <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
+                                    <span>مميز بالصدارة</span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setStarBoostProduct(p)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition-colors cursor-pointer shadow-2xs"
+                                  >
+                                    <Star className="w-3 h-3" />
+                                    <span>تمييز بنجمة</span>
+                                  </button>
+                                )
                               )}
                             </div>
 
@@ -3742,6 +4288,41 @@ export default function App() {
                     <span>تسجيل الخروج</span>
                   </button>
                 </div>
+
+                {/* بطاقة محفظتي والنقاط واشتراكات التجار داخل قسم أنا */}
+                {(walletConfig.enabled || walletConfig.showWalletButtonInHeader) && (
+                  <div
+                    className={`rounded-2xl p-4 border shadow-2xs space-y-3 ${
+                      darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center shrink-0">
+                          <Wallet className="w-5 h-5" />
+                        </div>
+                        <div className="text-right">
+                          <h4 className="font-bold text-xs text-slate-900 dark:text-slate-100">
+                            {walletConfig.walletButtonLabel || 'محفظتي'} والباقات
+                          </h4>
+                          <p className="text-[11px] text-slate-400">
+                            الرصيد: <strong className="text-amber-600">{currentUserWallet.points} نقطة</strong> • نجوم مجانية: <strong>{currentUserWallet.starCreditsRemaining || 0}</strong>
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWalletModalTab('overview');
+                          setWalletModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs cursor-pointer shrink-0 shadow-2xs"
+                      >
+                        فتح المحفظة
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* لوحة المندوب وتوصيل الطلبات بين المحافظات */}
                 {courierConfig.enabled && (
@@ -4207,12 +4788,12 @@ export default function App() {
               </div>
 
               <div className="p-4 overflow-y-auto space-y-3">
-                {notifications.length === 0 ? (
+                {mergedNotifications.length === 0 ? (
                   <div className="py-10 text-center text-slate-400 text-xs">
                     لا توجد إشعارات حالياً
                   </div>
                 ) : (
-                  notifications.map((item) => (
+                  mergedNotifications.map((item) => (
                     <div
                       key={item.id}
                       className={`p-3.5 rounded-xl border text-right flex flex-col gap-1.5 ${
@@ -4343,6 +4924,113 @@ export default function App() {
         onSubmitDeliveryRequest={handleSubmitCourierRequest}
         onUpdateRequestStatus={handleUpdateCourierRequestStatus}
       />
+
+      {/* نافذة محفظتي والنقاط وشام كاش وباقات التجار */}
+      <WalletModal
+        isOpen={walletModalOpen}
+        onClose={() => setWalletModalOpen(false)}
+        config={walletConfig}
+        userWallet={currentUserWallet}
+        allWallets={userWallets}
+        paymentRequests={paymentRequests}
+        currentUserId={currentUser?.id || null}
+        currentUserName={
+          currentUserProfile?.full_name || currentUser?.user_metadata?.full_name || ''
+        }
+        currentUserPhone={
+          currentUser?.user_metadata?.phone || currentUser?.user_metadata?.whatsapp || ''
+        }
+        currentUserNationalId={
+          currentUserProfile?.national_id || currentUser?.user_metadata?.national_id || ''
+        }
+        initialTab={walletModalTab}
+        darkMode={darkMode}
+        onRequireLogin={() => {
+          setWalletModalOpen(false);
+          setAuthModalReason('يرجى تسجيل الدخول لاستخدام المحفظة والشحن عبر شام كاش');
+          setAuthModalInitialMode('login');
+          setShowAuthModal(true);
+        }}
+        onSubmitPaymentRequest={handleSubmitWalletPaymentRequest}
+        onPurchaseMerchantPlanWithPoints={handlePurchaseMerchantPlanWithPoints}
+      />
+
+      {/* نافذة اختيار باقة نجمة الصدارة لتمييز إعلان */}
+      {starBoostProduct && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => !isApplyingStarBoost && setStarBoostProduct(null)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-2xl shadow-2xl border p-5 space-y-3 text-right ${
+              darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-100 text-slate-900'
+            }`}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
+                <h3 className="font-bold text-sm">تمييز الإعلان بنجمة الصدارة</h3>
+              </div>
+              <button
+                type="button"
+                disabled={isApplyingStarBoost}
+                onClick={() => setStarBoostProduct(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              الإعلان: <strong className="text-slate-800 dark:text-slate-200">{starBoostProduct.title}</strong>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] flex items-center justify-between">
+              <span>رصيدك: <strong>{currentUserWallet.points} نقطة</strong></span>
+              <span>نجوم مجانية: <strong>{currentUserWallet.starCreditsRemaining || 0}</strong></span>
+            </div>
+
+            <div className="space-y-2">
+              {(walletConfig.starFeaturePlans || [])
+                .filter((s) => s.visible !== false)
+                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                .map((sp) => {
+                  const hasFreeCredit = (currentUserWallet.starCreditsRemaining || 0) > 0;
+                  const canAfford = hasFreeCredit || currentUserWallet.points >= sp.pointsCost;
+                  return (
+                    <button
+                      key={sp.id}
+                      type="button"
+                      disabled={isApplyingStarBoost || !canAfford}
+                      onClick={() => handleApplyStarBoostToProduct(starBoostProduct, sp)}
+                      className={`w-full p-3 rounded-xl border text-right flex items-center justify-between gap-2 transition-all cursor-pointer disabled:opacity-50 ${
+                        darkMode
+                          ? 'bg-slate-800/70 border-slate-700 hover:border-amber-500'
+                          : 'bg-slate-50 border-slate-200 hover:border-amber-500'
+                      }`}
+                    >
+                      <div>
+                        <div className="font-bold text-xs flex items-center gap-1.5">
+                          <Crown className="w-3.5 h-3.5 text-amber-500" />
+                          <span>{sp.title}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          يبقى في الصدارة أعلى القائمة لمدة {sp.durationDays} يوم
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-500 text-white text-[11px] font-black shrink-0">
+                        {hasFreeCredit ? 'مجاني (رصيد باقة)' : `${sp.pointsCost} نقطة`}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* تأكيد أمان إضافي كجزء أساسي من التطبيق قبل حذف أي إعلان */}
       {productToDelete && (

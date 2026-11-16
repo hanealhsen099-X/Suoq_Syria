@@ -901,4 +901,614 @@ export function validateCourierApplicationInput(
   return { valid: true };
 }
 
+// ======================================================
+// منظومة المحفظة والنقاط وشام كاش واشتراكات التجار والنجوم
+// ======================================================
+
+export type WalletCurrency = 'SYP' | 'USD';
+
+export interface WalletPointPackage {
+  id: string;
+  title: string;
+  subtitle?: string;
+  points: number;
+  bonusPoints?: number;
+  price: number;
+  currency: WalletCurrency;
+  badgeText?: string;
+  bgColor: string;
+  gradientTo?: string;
+  useGradient?: boolean;
+  textColor: string;
+  borderColor: string;
+  effect: BadgeEffectType;
+  glowColor?: string;
+  visible: boolean;
+  order: number;
+}
+
+export interface MerchantSubscriptionPlan {
+  id: string;
+  title: string;
+  description: string;
+  durationDays: number;
+  pointsCost: number;
+  directPrice: number;
+  currency: WalletCurrency;
+  tierId?: string;
+  maxImagesPerAd: number;
+  maxDailyAds: number;
+  includedStarBoosts: number;
+  starBoostDurationDays: number;
+  badgeText?: string;
+  bgColor: string;
+  gradientTo?: string;
+  useGradient?: boolean;
+  textColor: string;
+  borderColor: string;
+  effect: BadgeEffectType;
+  glowColor?: string;
+  visible: boolean;
+  order: number;
+}
+
+export interface StarFeaturePlan {
+  id: string;
+  title: string;
+  durationDays: number;
+  pointsCost: number;
+  priority: number;
+  badgeText?: string;
+  visible: boolean;
+  order: number;
+}
+
+export interface WalletMonetizationConfig {
+  enabled: boolean;
+  showWalletButtonInHeader: boolean;
+  walletButtonLabel: string;
+  walletButtonPosition: 'left' | 'right';
+  welcomeBonusEnabled: boolean;
+  welcomeBonusPoints: number;
+  welcomeBonusMessage: string;
+  maxSubscribedMerchants: number;
+  enforceFreeUserLimits: boolean;
+  freeMaxImagesPerAd: number;
+  freeMaxDailyAds: number;
+  extraImagePointCost: number;
+  extraDailyAdPointCost: number;
+  expiryReminderEnabled: boolean;
+  expiryReminderDays: number;
+  expiryReminderTitle: string;
+  expiryReminderMessage: string;
+  shamCashTitle: string;
+  shamCashAccountName: string;
+  shamCashAccountNumberSyp: string;
+  shamCashQrImageUrlSyp: string;
+  shamCashAccountNumberUsd: string;
+  shamCashQrImageUrlUsd: string;
+  shamCashInstructionMessage: string;
+  shamCashPendingMessage: string;
+  estimatedVerificationMinutes: number;
+  paymentImageMaxWidth: 800 | 1000 | 1200;
+  paymentImageQuality: number;
+  packages: WalletPointPackage[];
+  merchantPlans: MerchantSubscriptionPlan[];
+  starFeaturePlans: StarFeaturePlan[];
+}
+
+export type WalletTransactionType =
+  | 'welcome_bonus'
+  | 'recharge'
+  | 'admin_adjust'
+  | 'plan_purchase'
+  | 'star_boost'
+  | 'extra_image'
+  | 'extra_ad';
+
+export interface WalletTransaction {
+  id: string;
+  type: WalletTransactionType;
+  amount: number;
+  title: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface UserWalletRecord {
+  userId: string;
+  points: number;
+  welcomeBonusClaimed?: boolean;
+  welcomeNationalId?: string;
+  activePlanId?: string;
+  activePlanTitle?: string;
+  verifiedUntil?: string | null;
+  tierId?: string;
+  maxImagesPerAd?: number;
+  maxDailyAds?: number;
+  starCreditsRemaining?: number;
+  updatedAt: string;
+  transactions: WalletTransaction[];
+}
+
+export type PaymentRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface WalletPaymentRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  userPhone?: string;
+  userNationalId?: string;
+  requestType: 'package_recharge' | 'merchant_plan';
+  targetId: string;
+  targetTitle: string;
+  pointsToCredit: number;
+  durationDays?: number;
+  priceAmount: number;
+  currency: WalletCurrency;
+  transferReference?: string;
+  receiptImageUrl?: string;
+  userNote?: string;
+  status: PaymentRequestStatus;
+  rejectionReason?: string;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export const DEFAULT_WALLET_CONFIG: WalletMonetizationConfig = {
+  enabled: false,
+  showWalletButtonInHeader: false,
+  walletButtonLabel: 'محفظتي',
+  walletButtonPosition: 'left',
+  welcomeBonusEnabled: true,
+  welcomeBonusPoints: 15,
+  welcomeBonusMessage:
+    'هدية ترحيبية بمناسبة انضمامك إلى سوق سوريا! يمكنك استخدامها لتجربة تمييز إعلانك أو إضافة صور إضافية.',
+  maxSubscribedMerchants: 100,
+  enforceFreeUserLimits: true,
+  freeMaxImagesPerAd: 1,
+  freeMaxDailyAds: 1,
+  extraImagePointCost: 5,
+  extraDailyAdPointCost: 15,
+  expiryReminderEnabled: true,
+  expiryReminderDays: 3,
+  expiryReminderTitle: 'تذكير بقرب انتهاء اشتراكك وتوثيق حسابك',
+  expiryReminderMessage:
+    'يتبقى أقل من 3 أيام على انتهاء باقة التوثيق الخاصة بك في سوق سوريا. يمكنك التجديد بسهولة من قسم محفظتي.',
+  shamCashTitle: 'الدفع عبر شام كاش (ShamCash)',
+  shamCashAccountName: 'سوق سوريا',
+  shamCashAccountNumberSyp: '',
+  shamCashQrImageUrlSyp: '',
+  shamCashAccountNumberUsd: '',
+  shamCashQrImageUrlUsd: '',
+  shamCashInstructionMessage:
+    'يرجى تحويل قيمة الباقة المختارة عبر تطبيق شام كاش إلى حساب سوق سوريا الموضّح أدناه، ثم إرفاق صورة إشعار التحويل ورقم العملية لإتمام الشحن.',
+  shamCashPendingMessage:
+    'تم استلام طلب التحويل بنجاح! يقوم فريق الإدارة حالياً بمطابقة الحوالة — عادةً يستغرق التفعيل حتى 5 دقائق. يمكنك متابعة تصفح التطبيق وسيُضاف الرصيد لمحفظتك تلقائياً فور التأكيد.',
+  estimatedVerificationMinutes: 5,
+  paymentImageMaxWidth: 1000,
+  paymentImageQuality: 0.72,
+  packages: [],
+  merchantPlans: [],
+  starFeaturePlans: [
+    {
+      id: 'star_3d',
+      title: 'نجمة الصدارة 3 أيام',
+      durationDays: 3,
+      pointsCost: 20,
+      priority: 65,
+      badgeText: '⭐ 3 أيام',
+      visible: true,
+      order: 1,
+    },
+    {
+      id: 'star_7d',
+      title: 'نجمة الصدارة أسبوع كامل',
+      durationDays: 7,
+      pointsCost: 40,
+      priority: 85,
+      badgeText: '⭐ أسبوع',
+      visible: true,
+      order: 2,
+    },
+    {
+      id: 'star_30d',
+      title: 'نجمة الصدارة شهر كامل',
+      durationDays: 30,
+      pointsCost: 120,
+      priority: 100,
+      badgeText: '⭐ شهر كامل',
+      visible: true,
+      order: 3,
+    },
+  ],
+};
+
+export function ensureUserWalletRecord(
+  wallets: Record<string, UserWalletRecord>,
+  userId: string,
+  nowIso: string = new Date().toISOString()
+): UserWalletRecord {
+  const existing = wallets?.[userId];
+  if (existing) {
+    return {
+      ...existing,
+      points: Number.isFinite(existing.points) ? existing.points : 0,
+      starCreditsRemaining: Number.isFinite(existing.starCreditsRemaining)
+        ? existing.starCreditsRemaining
+        : 0,
+      transactions: Array.isArray(existing.transactions) ? existing.transactions : [],
+    };
+  }
+  return {
+    userId,
+    points: 0,
+    starCreditsRemaining: 0,
+    updatedAt: nowIso,
+    transactions: [],
+  };
+}
+
+export function isUserVerificationActive(
+  wallet: Pick<UserWalletRecord, 'verifiedUntil'> | undefined,
+  baseIsVerified: boolean,
+  nowMs: number = Date.now()
+): { active: boolean; daysRemaining: number | null; expired: boolean } {
+  if (wallet?.verifiedUntil) {
+    const expMs = Date.parse(wallet.verifiedUntil);
+    if (Number.isFinite(expMs)) {
+      if (expMs <= nowMs) {
+        return { active: false, daysRemaining: 0, expired: true };
+      }
+      const daysRemaining = Math.ceil((expMs - nowMs) / (24 * 60 * 60 * 1000));
+      return { active: true, daysRemaining, expired: false };
+    }
+  }
+  return {
+    active: Boolean(baseIsVerified),
+    daysRemaining: null,
+    expired: false,
+  };
+}
+
+export function countActiveSubscribedMerchants(
+  wallets: Record<string, UserWalletRecord>,
+  nowMs: number = Date.now()
+): number {
+  let count = 0;
+  for (const w of Object.values(wallets || {})) {
+    if (!w || !w.verifiedUntil) continue;
+    const expMs = Date.parse(w.verifiedUntil);
+    if (Number.isFinite(expMs) && expMs > nowMs && w.activePlanId) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+export function canAcceptNewMerchantSubscription(
+  wallets: Record<string, UserWalletRecord>,
+  maxSubscribedMerchants: number,
+  userId: string,
+  nowMs: number = Date.now()
+): { allowed: boolean; activeCount: number; maxQuota: number } {
+  if (!maxSubscribedMerchants || maxSubscribedMerchants <= 0) {
+    return {
+      allowed: true,
+      activeCount: countActiveSubscribedMerchants(wallets, nowMs),
+      maxQuota: 0,
+    };
+  }
+  const existing = wallets?.[userId];
+  const alreadyActive = isUserVerificationActive(existing, false, nowMs).active && Boolean(existing?.activePlanId);
+  const activeCount = countActiveSubscribedMerchants(wallets, nowMs);
+  if (alreadyActive) {
+    return { allowed: true, activeCount, maxQuota: maxSubscribedMerchants };
+  }
+  return {
+    allowed: activeCount < maxSubscribedMerchants,
+    activeCount,
+    maxQuota: maxSubscribedMerchants,
+  };
+}
+
+export function applyWelcomeBonusIfEligible(
+  wallets: Record<string, UserWalletRecord>,
+  userId: string,
+  nationalId: string | undefined,
+  config: Pick<WalletMonetizationConfig, 'enabled' | 'welcomeBonusEnabled' | 'welcomeBonusPoints' | 'welcomeBonusMessage'>,
+  nowMs: number = Date.now()
+): { updated: Record<string, UserWalletRecord>; granted: boolean; pointsGranted: number } {
+  if (!userId || !config.welcomeBonusEnabled || config.welcomeBonusPoints <= 0) {
+    return { updated: wallets, granted: false, pointsGranted: 0 };
+  }
+
+  const current = ensureUserWalletRecord(wallets, userId, new Date(nowMs).toISOString());
+  if (current.welcomeBonusClaimed) {
+    return { updated: wallets, granted: false, pointsGranted: 0 };
+  }
+
+  const cleanNationalId = (nationalId || '').trim();
+  if (cleanNationalId) {
+    const nationalIdAlreadyClaimed = Object.values(wallets || {}).some(
+      (w) => w.welcomeBonusClaimed && w.welcomeNationalId === cleanNationalId
+    );
+    if (nationalIdAlreadyClaimed) {
+      return { updated: wallets, granted: false, pointsGranted: 0 };
+    }
+  }
+
+  const nowIso = new Date(nowMs).toISOString();
+  const tx: WalletTransaction = {
+    id: `tx_welcome_${nowMs}`,
+    type: 'welcome_bonus',
+    amount: config.welcomeBonusPoints,
+    title: 'نقاط هدية ترحيبية عند التسجيل',
+    note: config.welcomeBonusMessage,
+    createdAt: nowIso,
+  };
+
+  const nextWallet: UserWalletRecord = {
+    ...current,
+    points: current.points + config.welcomeBonusPoints,
+    welcomeBonusClaimed: true,
+    welcomeNationalId: cleanNationalId || undefined,
+    updatedAt: nowIso,
+    transactions: [tx, ...current.transactions].slice(0, 60),
+  };
+
+  return {
+    updated: { ...wallets, [userId]: nextWallet },
+    granted: true,
+    pointsGranted: config.welcomeBonusPoints,
+  };
+}
+
+export function creditWalletPoints(
+  wallets: Record<string, UserWalletRecord>,
+  userId: string,
+  pointsDelta: number,
+  type: WalletTransaction['type'],
+  title: string,
+  note?: string,
+  nowMs: number = Date.now()
+): Record<string, UserWalletRecord> {
+  const nowIso = new Date(nowMs).toISOString();
+  const current = ensureUserWalletRecord(wallets, userId, nowIso);
+  const nextPoints = Math.max(0, current.points + pointsDelta);
+  const tx: WalletTransaction = {
+    id: `tx_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+    type,
+    amount: pointsDelta,
+    title,
+    note,
+    createdAt: nowIso,
+  };
+  return {
+    ...wallets,
+    [userId]: {
+      ...current,
+      points: nextPoints,
+      updatedAt: nowIso,
+      transactions: [tx, ...current.transactions].slice(0, 60),
+    },
+  };
+}
+
+export function spendWalletPoints(
+  wallets: Record<string, UserWalletRecord>,
+  userId: string,
+  cost: number,
+  type: WalletTransaction['type'],
+  title: string,
+  note?: string,
+  nowMs: number = Date.now()
+): { ok: boolean; updated: Record<string, UserWalletRecord>; error?: string } {
+  const current = ensureUserWalletRecord(wallets, userId, new Date(nowMs).toISOString());
+  if (cost < 0 || !Number.isFinite(cost)) {
+    return { ok: false, updated: wallets, error: 'قيمة النقاط غير صالحة' };
+  }
+  if (current.points < cost) {
+    return {
+      ok: false,
+      updated: wallets,
+      error: `رصيدك الحالي (${current.points} نقطة) غير كافٍ، المطلوب ${cost} نقطة.`,
+    };
+  }
+  const next = creditWalletPoints(wallets, userId, -cost, type, title, note, nowMs);
+  return { ok: true, updated: next };
+}
+
+export function activateMerchantPlanForWallet(
+  wallets: Record<string, UserWalletRecord>,
+  userId: string,
+  plan: Pick<
+    MerchantSubscriptionPlan,
+    | 'id'
+    | 'title'
+    | 'durationDays'
+    | 'tierId'
+    | 'maxImagesPerAd'
+    | 'maxDailyAds'
+    | 'includedStarBoosts'
+  >,
+  pointsCharged: number = 0,
+  txType: WalletTransaction['type'] = 'plan_purchase',
+  nowMs: number = Date.now()
+): { ok: boolean; updated: Record<string, UserWalletRecord>; verifiedUntil: string; error?: string } {
+  const current = ensureUserWalletRecord(wallets, userId, new Date(nowMs).toISOString());
+  if (pointsCharged > 0 && current.points < pointsCharged) {
+    return {
+      ok: false,
+      updated: wallets,
+      verifiedUntil: current.verifiedUntil || '',
+      error: `رصيدك الحالي (${current.points} نقطة) لا يكفي لتفعيل «${plan.title}» (${pointsCharged} نقطة).`,
+    };
+  }
+
+  const existingExpMs = current.verifiedUntil ? Date.parse(current.verifiedUntil) : NaN;
+  const baseStartMs = Number.isFinite(existingExpMs) && existingExpMs > nowMs ? existingExpMs : nowMs;
+  const nextExpIso = new Date(
+    baseStartMs + Math.max(1, plan.durationDays) * 24 * 60 * 60 * 1000
+  ).toISOString();
+  const nowIso = new Date(nowMs).toISOString();
+
+  const tx: WalletTransaction = {
+    id: `tx_plan_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+    type: txType,
+    amount: pointsCharged > 0 ? -pointsCharged : 0,
+    title: `تفعيل ${plan.title} (${plan.durationDays} يوم)`,
+    note: `صالح حتى ${new Date(nextExpIso).toLocaleDateString('ar-SY')}`,
+    createdAt: nowIso,
+  };
+
+  return {
+    ok: true,
+    verifiedUntil: nextExpIso,
+    updated: {
+      ...wallets,
+      [userId]: {
+        ...current,
+        points: Math.max(0, current.points - pointsCharged),
+        activePlanId: plan.id,
+        activePlanTitle: plan.title,
+        verifiedUntil: nextExpIso,
+        tierId: plan.tierId || current.tierId || 'golden_store',
+        maxImagesPerAd: plan.maxImagesPerAd,
+        maxDailyAds: plan.maxDailyAds,
+        starCreditsRemaining: (current.starCreditsRemaining || 0) + (plan.includedStarBoosts || 0),
+        updatedAt: nowIso,
+        transactions: [tx, ...current.transactions].slice(0, 60),
+      },
+    },
+  };
+}
+
+export function getUserPostingEntitlement(params: {
+  walletConfig: WalletMonetizationConfig;
+  marketRules: MarketRulesConfig;
+  wallet?: UserWalletRecord;
+  isVerified: boolean;
+  products: Array<{ user_id?: string | null; created_at?: string | null }>;
+  userId: string;
+  nowMs?: number;
+}): {
+  isPaidMode: boolean;
+  isSubscribedOrVerified: boolean;
+  maxImagesAllowed: number;
+  maxDailyAdsAllowed: number;
+  usedAdsToday: number;
+  canPostNewAd: boolean;
+  extraImagePointCost: number;
+  extraDailyAdPointCost: number;
+} {
+  const {
+    walletConfig,
+    marketRules,
+    wallet,
+    isVerified,
+    products,
+    userId,
+    nowMs = Date.now(),
+  } = params;
+
+  const baseMaxImages = Math.max(1, marketRules.maxImagesPerAd || 3);
+  const baseMaxDaily = marketRules.maxDailyAdsPerUser || 0;
+  const usedToday = countUserAdsLast24h(products, userId, nowMs);
+
+  if (!walletConfig.enabled) {
+    return {
+      isPaidMode: false,
+      isSubscribedOrVerified: isVerified,
+      maxImagesAllowed: baseMaxImages,
+      maxDailyAdsAllowed: baseMaxDaily,
+      usedAdsToday: usedToday,
+      canPostNewAd: baseMaxDaily === 0 || usedToday < baseMaxDaily,
+      extraImagePointCost: 0,
+      extraDailyAdPointCost: 0,
+    };
+  }
+
+  const verState = isUserVerificationActive(wallet, isVerified, nowMs);
+  if (verState.active) {
+    const planMaxImg = Math.max(baseMaxImages, wallet?.maxImagesPerAd || 5);
+    const planMaxDaily = wallet?.maxDailyAds ?? 0;
+    return {
+      isPaidMode: true,
+      isSubscribedOrVerified: true,
+      maxImagesAllowed: planMaxImg,
+      maxDailyAdsAllowed: planMaxDaily,
+      usedAdsToday: usedToday,
+      canPostNewAd: planMaxDaily === 0 || usedToday < planMaxDaily,
+      extraImagePointCost: walletConfig.extraImagePointCost || 0,
+      extraDailyAdPointCost: walletConfig.extraDailyAdPointCost || 0,
+    };
+  }
+
+  if (!walletConfig.enforceFreeUserLimits) {
+    return {
+      isPaidMode: true,
+      isSubscribedOrVerified: false,
+      maxImagesAllowed: baseMaxImages,
+      maxDailyAdsAllowed: baseMaxDaily,
+      usedAdsToday: usedToday,
+      canPostNewAd: baseMaxDaily === 0 || usedToday < baseMaxDaily,
+      extraImagePointCost: walletConfig.extraImagePointCost || 0,
+      extraDailyAdPointCost: walletConfig.extraDailyAdPointCost || 0,
+    };
+  }
+
+  const freeMaxImages = Math.max(1, walletConfig.freeMaxImagesPerAd || 1);
+  const freeMaxDaily = Math.max(0, walletConfig.freeMaxDailyAds ?? 1);
+
+  return {
+    isPaidMode: true,
+    isSubscribedOrVerified: false,
+    maxImagesAllowed: freeMaxImages,
+    maxDailyAdsAllowed: freeMaxDaily,
+    usedAdsToday: usedToday,
+    canPostNewAd: freeMaxDaily === 0 || usedToday < freeMaxDaily,
+    extraImagePointCost: Math.max(0, walletConfig.extraImagePointCost || 0),
+    extraDailyAdPointCost: Math.max(0, walletConfig.extraDailyAdPointCost || 0),
+  };
+}
+
+export function buildExpiryInAppNotification(
+  wallet: UserWalletRecord | undefined,
+  config: Pick<
+    WalletMonetizationConfig,
+    'expiryReminderEnabled' | 'expiryReminderDays' | 'expiryReminderTitle' | 'expiryReminderMessage'
+  >,
+  nowMs: number = Date.now()
+): { id: string; title: string; message: string; created_at: string; is_read: boolean } | null {
+  if (!config.expiryReminderEnabled || !wallet?.verifiedUntil) return null;
+  const verState = isUserVerificationActive(wallet, false, nowMs);
+  if (!verState.active || verState.daysRemaining === null) return null;
+  const threshold = Math.max(1, config.expiryReminderDays || 3);
+  if (verState.daysRemaining > threshold) return null;
+
+  const expDateStr = new Date(wallet.verifiedUntil).toLocaleDateString('ar-SY');
+  return {
+    id: `wallet_expiry_${wallet.userId}_${wallet.verifiedUntil.slice(0, 10)}`,
+    title: config.expiryReminderTitle || 'تنبيه قرب انتهاء التوثيق',
+    message: `${config.expiryReminderMessage} (المتبقي: ${verState.daysRemaining} يوم — ينتهي بتاريخ ${expDateStr})`,
+    created_at: new Date(nowMs).toISOString(),
+    is_read: false,
+  };
+}
+
+export function formatWalletPrice(amount: number, currency: WalletCurrency): string {
+  const num = Number.isFinite(amount) ? amount : 0;
+  const formatted = num.toLocaleString('en-US');
+  return currency === 'USD' ? `${formatted} $` : `${formatted} ل.س`;
+}
+
+export function getWalletCardEffectClass(effect?: BadgeEffectType): string {
+  if (effect === 'shimmer') return 'souq-badge-shimmer';
+  if (effect === 'glow') return 'souq-badge-glow';
+  if (effect === 'metallic_gold') return 'souq-badge-metallic';
+  return '';
+}
+
+
 
