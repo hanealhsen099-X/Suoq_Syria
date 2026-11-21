@@ -631,6 +631,7 @@ export function resolveSellerVerificationBadge(
   verificationTiers: VerificationTier[],
   defaultVerifiedBadge?: BadgeAppearanceConfig
 ): BadgeAppearanceConfig | undefined {
+  if (!isVerified) return undefined;
   const assignedTierId = sellerId ? userTiers?.[sellerId] : undefined;
   if (assignedTierId) {
     const matchedTier = (verificationTiers || []).find((t) => t.id === assignedTierId);
@@ -638,7 +639,6 @@ export function resolveSellerVerificationBadge(
       return matchedTier.badge;
     }
   }
-  if (!isVerified) return undefined;
   return defaultVerifiedBadge;
 }
 
@@ -1510,5 +1510,94 @@ export function getWalletCardEffectClass(effect?: BadgeEffectType): string {
   return '';
 }
 
+export interface BannedUserCloudRecord {
+  userId: string;
+  isBanned: boolean;
+  bannedUntil: string | null;
+  banReason: string | null;
+  updatedAt: string;
+}
+
+export interface EffectiveBanState {
+  isBanned: boolean;
+  bannedUntil: string | null;
+  banReason: string | null;
+  expired: boolean;
+}
+
+export function resolveEffectiveBanState(
+  profile?: {
+    is_banned?: boolean | null;
+    banned_until?: string | null;
+    ban_reason?: string | null;
+  } | null,
+  cloudBan?: BannedUserCloudRecord | null,
+  nowMs: number = Date.now()
+): EffectiveBanState {
+  let activeIsBanned = false;
+  let bannedUntil: string | null = null;
+  let banReason: string | null = null;
+
+  if (cloudBan) {
+    activeIsBanned = Boolean(cloudBan.isBanned);
+    bannedUntil = cloudBan.bannedUntil || null;
+    banReason = cloudBan.banReason || null;
+  } else if (profile) {
+    activeIsBanned = Boolean(profile.is_banned);
+    bannedUntil = profile.banned_until || null;
+    banReason = profile.ban_reason || null;
+  }
+
+  if (!activeIsBanned) {
+    return { isBanned: false, bannedUntil: null, banReason: null, expired: false };
+  }
+
+  if (bannedUntil) {
+    const expMs = Date.parse(bannedUntil);
+    if (Number.isFinite(expMs) && expMs <= nowMs) {
+      return { isBanned: false, bannedUntil: null, banReason: null, expired: true };
+    }
+  }
+
+  return {
+    isBanned: true,
+    bannedUntil,
+    banReason: banReason || 'مخالفة شروط الاستخدام',
+    expired: false,
+  };
+}
+
+export function formatRemainingBanTime(
+  bannedUntil?: string | null,
+  nowMs: number = Date.now()
+): string {
+  if (!bannedUntil) return 'حظر دائم حتى إشعار آخر';
+  const expMs = Date.parse(bannedUntil);
+  if (!Number.isFinite(expMs)) return 'حظر مؤقت';
+  const diffSec = Math.max(0, Math.floor((expMs - nowMs) / 1000));
+  if (diffSec === 0) return 'انتهت مدة الحظر';
+
+  const days = Math.floor(diffSec / 86400);
+  const hours = Math.floor((diffSec % 86400) / 3600);
+  const mins = Math.floor((diffSec % 3600) / 60);
+  const secs = diffSec % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days} يوم`);
+  if (hours > 0) parts.push(`${hours} ساعة`);
+  if (mins > 0) parts.push(`${mins} دقيقة`);
+  if (days === 0) parts.push(`${secs} ثانية`);
+  return parts.join(' و ');
+}
+
+export function resolveEffectiveUserTier(
+  userId: string | null | undefined,
+  isVerified: boolean,
+  userTiers: Record<string, string>,
+  wallet?: Pick<UserWalletRecord, 'tierId'> | null
+): string | undefined {
+  if (!userId || !isVerified) return undefined;
+  return userTiers?.[userId] || wallet?.tierId || undefined;
+}
 
 

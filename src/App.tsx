@@ -91,6 +91,10 @@ import {
   activateMerchantPlanForWallet,
   getUserPostingEntitlement,
   buildExpiryInAppNotification,
+  resolveEffectiveBanState,
+  formatRemainingBanTime,
+  resolveEffectiveUserTier,
+  type BannedUserCloudRecord,
   type ProductItem,
   type MarketRulesConfig,
   type PromotionalBannerSlide,
@@ -630,6 +634,15 @@ export default function App() {
                   const vIds = JSON.parse(row.description);
                   if (Array.isArray(vIds)) {
                     setVerifiedUserIds(vIds);
+                    setVerifiedCloudLoaded(true);
+                  }
+                } catch {}
+              }
+              if (row.title === '__APP_CONFIG_BANNED_USERS__' && row.description) {
+                try {
+                  const cloudBanned = JSON.parse(row.description);
+                  if (cloudBanned && typeof cloudBanned === 'object' && !Array.isArray(cloudBanned)) {
+                    setBannedUsersMap(cloudBanned as Record<string, BannedUserCloudRecord>);
                   }
                 } catch {}
               }
@@ -746,13 +759,23 @@ export default function App() {
               }
             } catch (e) {}
           });
+          if (!seen.has('__APP_CONFIG_BANNED_USERS__')) {
+            setBannedUsersMap({});
+          }
         }
         setWalletCloudLoaded(true);
       });
   };
 
+  const fetchCloudConfigRef = useRef(fetchCloudConfig);
+  fetchCloudConfigRef.current = fetchCloudConfig;
+  const fetchProductsRef = useRef<() => Promise<void> | void>(() => {});
+  const fetchNotificationsRef = useRef<() => Promise<void> | void>(() => {});
+  const fetchCurrentUserProfileRef = useRef<() => Promise<void> | void>(() => {});
+  const currentUserIdRef = useRef<string | null>(null);
+
   useEffect(() => {
-    fetchCloudConfig();
+    fetchCloudConfigRef.current();
     const channel = supabase
       .channel('cloud_configs_sync')
       .on(
@@ -760,32 +783,74 @@ export default function App() {
         { event: '*', schema: 'public', table: 'products' },
         (payload) => {
           const title = (payload.new as any)?.title || (payload.old as any)?.title;
-          if (title && (String(title).startsWith('__APP_CONFIG_') || String(title) === 'APP_CONFIG_FIELDS')) {
-            fetchCloudConfig();
+          if (!title) {
+            // قد تغيب قيمة title في أحداث DELETE إذا لم يُفعّل REPLICA IDENTITY FULL
+            fetchCloudConfigRef.current();
+            fetchProductsRef.current();
+          } else if (
+            String(title).startsWith('__APP_CONFIG_') ||
+            String(title) === 'APP_CONFIG_FIELDS'
+          ) {
+            fetchCloudConfigRef.current();
           } else {
-            fetchProducts();
+            fetchProductsRef.current();
           }
         }
       )
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'profiles' },
+        { event: '*', schema: 'public', table: 'profiles' },
         (payload) => {
-          const updatedProfile = payload.new as any;
+          const updatedProfile = (payload.new || payload.old) as any;
           if (updatedProfile?.id) {
-            setProfileVerifiedMap((prev) => ({
-              ...prev,
-              [updatedProfile.id]: Boolean(updatedProfile.is_verified),
-            }));
-            setCurrentUserProfile((prev) =>
-              prev && prev.id === updatedProfile.id ? { ...prev, ...updatedProfile } : prev
-            );
+            if (payload.eventType !== 'DELETE') {
+              setProfileVerifiedMap((prev) => ({
+                ...prev,
+                [updatedProfile.id]: Boolean(updatedProfile.is_verified),
+              }));
+              setCurrentUserProfile((prev) =>
+                prev && prev.id === updatedProfile.id ? { ...prev, ...updatedProfile } : prev
+              );
+            }
+            if (updatedProfile.id === currentUserIdRef.current) {
+              fetchCurrentUserProfileRef.current();
+            }
           }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications' },
+        () => {
+          fetchNotificationsRef.current();
         }
       )
       .subscribe();
 
+    const syncAllFromCloud = () => {
+      if (document.visibilityState === 'hidden') return;
+      fetchCloudConfigRef.current();
+      fetchProductsRef.current();
+      fetchNotificationsRef.current();
+      if (currentUserIdRef.current) {
+        fetchCurrentUserProfileRef.current();
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncAllFromCloud();
+      }
+    };
+
+    window.addEventListener('focus', syncAllFromCloud);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    const fallbackPollId = window.setInterval(syncAllFromCloud, 12000);
+
     return () => {
+      window.removeEventListener('focus', syncAllFromCloud);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.clearInterval(fallbackPollId);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -889,8 +954,11 @@ export default function App() {
 
   // المستخدم والمصادقة مع Supabase
   const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
-  // قائمة معرفات المستخدمين الموثقين من الإدارة
+  // قائمة معرفات المستخدمين الموثقين وحالة الحظر اللحظي من الإدارة
   const [verifiedUserIds, setVerifiedUserIds] = useState<string[]>([]);
+  const [verifiedCloudLoaded, setVerifiedCloudLoaded] = useState(false);
+  const [bannedUsersMap, setBannedUsersMap] = useState<Record<string, BannedUserCloudRecord>>({});
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   // إعدادات الحقول الديناميكية القادمة من الإدارة
   interface CustomCloudWidget {
@@ -1207,10 +1275,9 @@ export default function App() {
         const enriched = combinedData.map((item) => ({
           ...item,
           seller_name: item.user_id ? profileMap[item.user_id] || 'معلن في سوق سوريا' : 'معلن في سوق سوريا',
-          seller_verified: Boolean(
-            item.seller_verified ||
-              (item.user_id && (verifiedMap[item.user_id] || verifiedUserIds.includes(item.user_id)))
-          ),
+          seller_verified: item.user_id
+            ? Boolean(verifiedMap[item.user_id] || verifiedUserIds.includes(item.user_id))
+            : Boolean(item.seller_verified),
         }));
         setProducts(enriched as ProductItem[]);
       }
@@ -1259,11 +1326,54 @@ export default function App() {
     }
   };
 
+  fetchProductsRef.current = fetchProducts;
+  fetchNotificationsRef.current = fetchNotifications;
+  fetchCurrentUserProfileRef.current = fetchCurrentUserProfile;
+  currentUserIdRef.current = currentUser?.id ?? null;
+
   useEffect(() => {
     fetchProducts();
     fetchNotifications();
     fetchCurrentUserProfile();
   }, [currentUser?.id]);
+
+  // اشتقاق حالة الحظر الفعلي اللحظي + مؤقت فك الحظر التلقائي عند انتهاء المدة
+  const currentBanState = useMemo(() => {
+    if (!currentUser?.id) {
+      return { isBanned: false, bannedUntil: null, banReason: null, expired: false };
+    }
+    return resolveEffectiveBanState(currentUserProfile, bannedUsersMap[currentUser.id], nowTick);
+  }, [currentUser?.id, currentUserProfile, bannedUsersMap, nowTick]);
+
+  const isCurrentUserBanned = currentBanState.isBanned;
+
+  useEffect(() => {
+    if (!isCurrentUserBanned) return;
+    const tickId = window.setInterval(() => {
+      setNowTick(Date.now());
+    }, 1000);
+    return () => window.clearInterval(tickId);
+  }, [isCurrentUserBanned]);
+
+  const wasBannedRef = useRef(false);
+  useEffect(() => {
+    if (isCurrentUserBanned) {
+      wasBannedRef.current = true;
+      return;
+    }
+    if (wasBannedRef.current) {
+      wasBannedRef.current = false;
+      if (currentUser?.id) {
+        const msg = currentBanState.expired
+          ? 'انتهت مدة الحظر وعاد حسابك للعمل بشكل طبيعي ✓'
+          : 'تم رفع الحظر عن حسابك من الإدارة وعاد حسابك للعمل ✓';
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(null), 4500);
+        fetchCurrentUserProfileRef.current();
+        fetchCloudConfigRef.current();
+      }
+    }
+  }, [isCurrentUserBanned, currentBanState.expired, currentUser?.id]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -1440,6 +1550,9 @@ export default function App() {
   };
 
   const handleSubmitCourierApplication = async (newApp: CourierApplicationItem) => {
+    if (isCurrentUserBanned) {
+      throw new Error('حسابك محظور حالياً ولا يمكنك إرسال طلبات');
+    }
     const nextApps = await upsertCourierArrayCloudRecord<CourierApplicationItem>(
       '__APP_CONFIG_COURIER_APPLICATIONS__',
       'courier_applications',
@@ -1452,7 +1565,7 @@ export default function App() {
   };
 
   const handleToggleCourierOnline = async () => {
-    if (!myCourierApp || myCourierApp.status !== 'approved') return;
+    if (isCurrentUserBanned || !myCourierApp || myCourierApp.status !== 'approved') return;
     const nextOnline = !myCourierApp.isOnline;
     const nextApps = await upsertCourierArrayCloudRecord<CourierApplicationItem>(
       '__APP_CONFIG_COURIER_APPLICATIONS__',
@@ -1474,6 +1587,9 @@ export default function App() {
   };
 
   const handleSubmitCourierRequest = async (req: CourierDeliveryRequest) => {
+    if (isCurrentUserBanned) {
+      throw new Error('حسابك محظور حالياً ولا يمكنك إرسال طلبات');
+    }
     const nextReqs = await upsertCourierArrayCloudRecord<CourierDeliveryRequest>(
       '__APP_CONFIG_COURIER_REQUESTS__',
       'courier_requests',
@@ -1613,6 +1729,9 @@ export default function App() {
   ]);
 
   const handleSubmitWalletPaymentRequest = async (req: WalletPaymentRequest) => {
+    if (isCurrentUserBanned) {
+      throw new Error('حسابك محظور حالياً ولا يمكنك إرسال طلبات');
+    }
     const nextReqs = await upsertCloudJsonConfig<WalletPaymentRequest[]>(
       '__APP_CONFIG_PAYMENT_REQUESTS__',
       'payment_requests',
@@ -1627,6 +1746,9 @@ export default function App() {
   const handlePurchaseMerchantPlanWithPoints = async (
     plan: MerchantSubscriptionPlan
   ): Promise<{ ok: boolean; error?: string }> => {
+    if (isCurrentUserBanned) {
+      return { ok: false, error: 'حسابك محظور حالياً ولا يمكنك الاشتراك' };
+    }
     if (!currentUser?.id) {
       return { ok: false, error: 'يرجى تسجيل الدخول أولاً' };
     }
@@ -1676,7 +1798,7 @@ export default function App() {
   };
 
   const handleApplyStarBoostToProduct = async (product: ProductItem, plan: StarFeaturePlan) => {
-    if (!currentUser?.id || isApplyingStarBoost) return;
+    if (isCurrentUserBanned || !currentUser?.id || isApplyingStarBoost) return;
     setIsApplyingStarBoost(true);
     try {
       const currentWallet = ensureUserWalletRecord(userWallets, currentUser.id);
@@ -1876,11 +1998,25 @@ export default function App() {
   // اشتقاق صلاحيات النشر وحدود الصور وفق خطة المستخدم أو الباقة المجانية
   const currentUserVerificationState = useMemo(() => {
     const baseVerified = Boolean(
-      currentUserProfile?.is_verified ||
-        (currentUser?.id && (verifiedUserIds.includes(currentUser.id) || userTiers[currentUser.id]))
+      currentUser?.id &&
+        (verifiedCloudLoaded
+          ? verifiedUserIds.includes(currentUser.id)
+          : currentUserProfile?.is_verified || profileVerifiedMap[currentUser.id])
     );
-    return isUserVerificationActive(currentUser?.id ? userWallets[currentUser.id] : undefined, baseVerified);
-  }, [currentUser?.id, currentUserProfile?.is_verified, verifiedUserIds, userTiers, userWallets]);
+    return isUserVerificationActive(
+      currentUser?.id ? userWallets[currentUser.id] : undefined,
+      baseVerified,
+      nowTick
+    );
+  }, [
+    currentUser?.id,
+    verifiedCloudLoaded,
+    verifiedUserIds,
+    currentUserProfile?.is_verified,
+    profileVerifiedMap,
+    userWallets,
+    nowTick,
+  ]);
 
   const isCurrentUserVerified = currentUserVerificationState.active;
 
@@ -1940,17 +2076,12 @@ export default function App() {
     setProductImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const isCurrentUserBanned = Boolean(
-    currentUserProfile?.is_banned &&
-      (!currentUserProfile?.banned_until || new Date(currentUserProfile.banned_until).getTime() > Date.now())
-  );
-
   const handlePublishSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPublishError(null);
     if (isCurrentUserBanned) {
       setPublishError(
-        `حسابك مقيد حالياً من النشر${currentUserProfile?.ban_reason ? ` (${currentUserProfile.ban_reason})` : ''}`
+        `حسابك محظور حالياً ولا يمكنك النشر (${currentBanState.banReason || 'مخالفة الشروط'})`
       );
       return;
     }
@@ -2165,37 +2296,62 @@ export default function App() {
     }
   };
 
-  // دمج رتب التوثيق من الإدارة مع رتب باقات التجار النشطة
+  // دمج رتب التوثيق من الإدارة مع رتب باقات التجار النشطة مع أولوية لرتبة الإدارة وإخفاء الرتبة لغير الموثقين
   const effectiveUserTiers = useMemo(() => {
-    const merged: Record<string, string> = { ...userTiers };
-    for (const [uid, wallet] of Object.entries(userWallets)) {
-      if (wallet?.tierId && isUserVerificationActive(wallet, false).active) {
-        merged[uid] = wallet.tierId;
+    const merged: Record<string, string> = {};
+    const candidateUids = new Set([...Object.keys(userTiers), ...Object.keys(userWallets)]);
+    for (const uid of candidateUids) {
+      const wallet = userWallets[uid];
+      const baseVerified = verifiedCloudLoaded
+        ? verifiedUserIds.includes(uid)
+        : Boolean(
+            profileVerifiedMap[uid] ||
+              (currentUser?.id === uid && currentUserProfile?.is_verified)
+          );
+      const verActive = isUserVerificationActive(wallet, baseVerified, nowTick).active;
+      const resolvedTier = resolveEffectiveUserTier(uid, verActive, userTiers, wallet);
+      if (resolvedTier) {
+        merged[uid] = resolvedTier;
       }
     }
     return merged;
-  }, [userTiers, userWallets]);
+  }, [
+    userTiers,
+    userWallets,
+    verifiedCloudLoaded,
+    verifiedUserIds,
+    profileVerifiedMap,
+    currentUser?.id,
+    currentUserProfile?.is_verified,
+    nowTick,
+  ]);
 
-  // دمج شارة التوثيق لحظياً مع مراعاة انتهاء مدة التوثيق الزمنية
+  // دمج شارة التوثيق لحظياً مع مراعاة إلغاء التوثيق وانتهاء مدة التوثيق الزمنية
   const productsWithVerification = useMemo(() => {
     return products.map((item) => {
-      const baseVerified = Boolean(
-        item.seller_verified ||
-          (item.user_id &&
-            (verifiedUserIds.includes(item.user_id) ||
-              profileVerifiedMap[item.user_id] ||
-              effectiveUserTiers[item.user_id]))
-      );
+      const baseVerified = item.user_id
+        ? verifiedCloudLoaded
+          ? verifiedUserIds.includes(item.user_id)
+          : Boolean(profileVerifiedMap[item.user_id] ?? item.seller_verified)
+        : Boolean(item.seller_verified);
       const verState = isUserVerificationActive(
         item.user_id ? userWallets[item.user_id] : undefined,
-        baseVerified
+        baseVerified,
+        nowTick
       );
       return {
         ...item,
         seller_verified: verState.active,
       };
     });
-  }, [products, verifiedUserIds, profileVerifiedMap, effectiveUserTiers, userWallets]);
+  }, [
+    products,
+    verifiedCloudLoaded,
+    verifiedUserIds,
+    profileVerifiedMap,
+    userWallets,
+    nowTick,
+  ]);
 
   // خريطة الإعلانات المميزة VIP النشطة حالياً (مع استبعاد المنتهية صلاحيتها وترتيب الأولوية)
   const activeFeaturedMap = useMemo(
@@ -2228,7 +2384,7 @@ export default function App() {
 
   // تأكيد أمان إضافي كجزء أساسي من التطبيق قبل تنفيذ حذف الإعلان
   const handleConfirmDeleteProduct = async () => {
-    if (!productToDelete) return;
+    if (isCurrentUserBanned || !productToDelete) return;
     setIsDeletingProduct(true);
     try {
       const { error } = await supabase.from('products').delete().eq('id', productToDelete.id);
@@ -2401,6 +2557,100 @@ export default function App() {
 
   const currentCategoryData = categories.find((c) => c.name === activeCategoryName);
   const activeCreateCategoryData = categories.find((c) => c.name === productCategory);
+
+  // ==========================================
+  // شاشة الحظر الكامل والحجب عن التطبيق لحين انتهاء المدة أو فك الحظر من الإدارة
+  // ==========================================
+  if (isCurrentUserBanned && !maintenanceConfig.enabled) {
+    return (
+      <div
+        dir="rtl"
+        className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center overflow-y-auto"
+      >
+        <div className="w-full max-w-md rounded-3xl bg-slate-900/95 border border-rose-800/70 shadow-2xl p-6 space-y-5">
+          <div className="w-20 h-20 mx-auto rounded-3xl bg-rose-500/15 border border-rose-500/40 text-rose-400 flex items-center justify-center shadow-lg shadow-rose-950/50">
+            <ShieldAlert className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-black text-rose-300">
+              تم حظر حسابك عن استخدام التطبيق
+            </h2>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              لا يمكنك تصفح الإعلانات أو النشر أو إرسال أو استقبال أي طلبات خلال فترة الحظر.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-rose-950/50 border border-rose-900/80 text-right space-y-2 text-xs">
+            <div>
+              <span className="text-rose-400 font-bold block text-[11px]">سبب الحظر:</span>
+              <p className="font-bold text-white mt-0.5 leading-relaxed">
+                {currentBanState.banReason || 'مخالفة سياسة الاستخدام وشروط التطبيق'}
+              </p>
+            </div>
+
+            <div className="pt-2 border-t border-rose-900/60 flex items-center justify-between gap-2">
+              <span className="text-rose-300 font-bold flex items-center gap-1.5">
+                <Clock className="w-4 h-4 shrink-0" />
+                <span>المدة المتبقية:</span>
+              </span>
+              <span className="font-black text-amber-300 tabular-nums">
+                {formatRemainingBanTime(currentBanState.bannedUntil, nowTick)}
+              </span>
+            </div>
+
+            {currentBanState.bannedUntil && (
+              <div className="text-[11px] text-slate-300 flex items-center justify-between gap-2">
+                <span>موعد فك الحظر التلقائي:</span>
+                <span className="font-bold text-slate-100">
+                  {new Date(currentBanState.bannedUntil).toLocaleString('ar-SY')}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            سيُرفع الحظر ويعود حسابك للعمل تلقائياً فور انتهاء المدة المحددة أو فور إلغائه من الإدارة.
+          </p>
+
+          <div className="flex flex-col gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setNowTick(Date.now());
+                fetchCloudConfigRef.current();
+                fetchCurrentUserProfileRef.current();
+              }}
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>فحص حالة الحساب الآن</span>
+            </button>
+
+            {supportConfig?.whatsapp?.enabled && (
+              <button
+                type="button"
+                onClick={() => handleOpenSupport('whatsapp')}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <MessageCircle className="w-4 h-4 text-emerald-400" />
+                <span>{supportConfig.whatsapp.label || 'تواصل مع الإدارة عبر واتساب'}</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="w-full py-2.5 rounded-xl bg-rose-950/70 hover:bg-rose-900 border border-rose-800 text-rose-200 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>تسجيل الخروج</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ==========================================
   // واجهة نشر الإعلان
@@ -4260,11 +4510,6 @@ export default function App() {
                   <span className="text-[11px] text-slate-400 mt-0.5">
                     {currentUser.email}
                   </span>
-                  {isCurrentUserBanned && (
-                    <div className="mt-2 px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-bold">
-                      تنبيه: حسابك مقيد مؤقتاً {currentUserProfile?.ban_reason ? `(${currentUserProfile.ban_reason})` : ''}
-                    </div>
-                  )}
 
                   {currentUser.user_metadata?.national_id && (
                     <div className="mt-3 pt-3 border-t border-slate-100 w-full grid grid-cols-2 gap-2 text-right text-xs">

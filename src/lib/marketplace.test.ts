@@ -22,6 +22,10 @@ import {
   getUserPostingEntitlement,
   spendWalletPoints,
   buildExpiryInAppNotification,
+  resolveSellerVerificationBadge,
+  resolveEffectiveBanState,
+  resolveEffectiveUserTier,
+  formatRemainingBanTime,
   type CourierApplicationItem,
   type UserWalletRecord,
   ProductItem,
@@ -398,5 +402,54 @@ test('buildExpiryInAppNotification emits quiet bell reminder within 3 days of ex
   const notifLater = buildExpiryInAppNotification(wallet10DaysLeft, DEFAULT_WALLET_CONFIG, now);
   assert.equal(notifLater, null);
 });
+
+test('resolveSellerVerificationBadge hides all badges when unverified and switches tiers cleanly', () => {
+  const tiers = [
+    {
+      id: 'real_estate',
+      name: 'عقارات',
+      badge: { text: 'مكتب عقاري', bgColor: '#111', textColor: '#fff', borderColor: '#222', effect: 'none' as const },
+    },
+    {
+      id: 'golden',
+      name: 'ذهبي',
+      badge: { text: 'متجر ذهبي', bgColor: '#fa0', textColor: '#000', borderColor: '#fb0', effect: 'glow' as const },
+    },
+  ];
+  const defaultBadge = { text: 'موثق', bgColor: '#0f0', textColor: '#000', borderColor: '#0a0', effect: 'none' as const };
+
+  // When unverified, even if a tier exists, badge must be undefined
+  const unverifiedBadge = resolveSellerVerificationBadge('u1', false, { u1: 'real_estate' }, tiers, defaultBadge);
+  assert.equal(unverifiedBadge, undefined);
+
+  // Switching tier resolves the new tier badge immediately
+  const resolvedTierId = resolveEffectiveUserTier('u1', true, { u1: 'golden' }, { tierId: 'real_estate' });
+  assert.equal(resolvedTierId, 'golden');
+  const goldenBadge = resolveSellerVerificationBadge('u1', true, { u1: resolvedTierId! }, tiers, defaultBadge);
+  assert.equal(goldenBadge?.text, 'متجر ذهبي');
+});
+
+test('resolveEffectiveBanState blocks until expiry and lifts immediately on admin unban', () => {
+  const now = Date.parse('2026-08-01T12:00:00Z');
+  const futureIso = new Date(now + 60_000).toISOString();
+  const pastIso = new Date(now - 1000).toISOString();
+
+  const banned = resolveEffectiveBanState(
+    { is_banned: true, banned_until: futureIso, ban_reason: 'سبب الحظر' },
+    null,
+    now
+  );
+  assert.equal(banned.isBanned, true);
+  assert.ok(formatRemainingBanTime(futureIso, now).length > 0);
+
+  const autoExpired = resolveEffectiveBanState(
+    { is_banned: true, banned_until: pastIso, ban_reason: 'سبب الحظر' },
+    null,
+    now
+  );
+  assert.equal(autoExpired.isBanned, false);
+  assert.equal(autoExpired.expired, true);
+});
+
 
 
